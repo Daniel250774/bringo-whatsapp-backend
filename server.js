@@ -13,9 +13,17 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 
-app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN }));
+// CORS permis pentru HTML local file://, telefon, laptop, Netlify etc.
+const corsOptions = {
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "x-api-key"],
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "2mb" }));
 
 const upload = multer({
@@ -68,6 +76,7 @@ async function uploadMediaToWhatsApp(file) {
   if (!response.data || !response.data.id) {
     throw new Error("WhatsApp nu a returnat media_id.");
   }
+
   return response.data.id;
 }
 
@@ -80,6 +89,7 @@ async function sendImageMessage(to, mediaId, caption) {
     type: "image",
     image: { id: mediaId }
   };
+
   if (caption) payload.image.caption = caption;
 
   const response = await axios.post(url, payload, {
@@ -88,6 +98,7 @@ async function sendImageMessage(to, mediaId, caption) {
       "Content-Type": "application/json"
     }
   });
+
   return response.data;
 }
 
@@ -117,6 +128,7 @@ async function sendTemplateWithImage(to, mediaId) {
       "Content-Type": "application/json"
     }
   });
+
   return response.data;
 }
 
@@ -187,5 +199,5 @@ app.post("/send-card", checkApiKey, upload.single("image"), async (req, res) => 
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v2 running on port ${PORT}`);
 });
