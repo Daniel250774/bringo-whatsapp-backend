@@ -40,7 +40,9 @@ function defaultStore() {
     cards: [],
     employees: [],
     sentLog: [],
-    processedMessageIds: []
+    processedMessageIds: [],
+    lastInbound: null,
+    lastGiftRequest: null
   };
 }
 
@@ -52,7 +54,9 @@ function loadStore() {
       cards: Array.isArray(parsed.cards) ? parsed.cards : [],
       employees: Array.isArray(parsed.employees) ? parsed.employees : [],
       sentLog: Array.isArray(parsed.sentLog) ? parsed.sentLog : [],
-      processedMessageIds: Array.isArray(parsed.processedMessageIds) ? parsed.processedMessageIds : []
+      processedMessageIds: Array.isArray(parsed.processedMessageIds) ? parsed.processedMessageIds : [],
+      lastInbound: parsed.lastInbound || null,
+      lastGiftRequest: parsed.lastGiftRequest || null
     };
   } catch (e) {
     console.error("loadStore error", e.message);
@@ -263,16 +267,39 @@ function buildAdminCaption(employee, card, remainingAfter) {
   );
 }
 
+function recordInboundMessage(from, text, type, messageId) {
+  const store = loadStore();
+  store.lastInbound = {
+    at: new Date().toISOString(),
+    from: normalizePhone(from),
+    text: String(text || ""),
+    type: type || "",
+    messageId: messageId || ""
+  };
+  saveStore(store);
+}
+
 async function handleGiftRequest(from, messageId) {
   const store = loadStore();
 
   if (messageId && store.processedMessageIds.includes(messageId)) {
+    store.lastGiftRequest = {
+      at: new Date().toISOString(),
+      from: normalizePhone(from),
+      result: "duplicate"
+    };
+    saveStore(store);
     return { ok: true, duplicate: true };
   }
 
   const employee = findEmployeeByPhone(store, from);
   if (!employee) {
     await sendTextMessage(from, "Numărul tău nu este înregistrat pentru primirea de gifturi.");
+    store.lastGiftRequest = {
+      at: new Date().toISOString(),
+      from: normalizePhone(from),
+      result: "employee_not_found"
+    };
     if (messageId) store.processedMessageIds.push(messageId);
     saveStore(store);
     return { ok: false, reason: "employee_not_found" };
@@ -280,6 +307,12 @@ async function handleGiftRequest(from, messageId) {
 
   if (employee.blocked) {
     await sendTextMessage(from, "Nu poți primi gift momentan. Contactează administratorul.");
+    store.lastGiftRequest = {
+      at: new Date().toISOString(),
+      from: normalizePhone(from),
+      employee: employee.name,
+      result: "employee_blocked"
+    };
     if (messageId) store.processedMessageIds.push(messageId);
     saveStore(store);
     return { ok: false, reason: "employee_blocked" };
@@ -296,6 +329,12 @@ async function handleGiftRequest(from, messageId) {
     } catch (e) {
       console.error("admin no-stock notification failed:", e.response?.data || e.message);
     }
+    store.lastGiftRequest = {
+      at: new Date().toISOString(),
+      from: normalizePhone(from),
+      employee: employee.name,
+      result: "no_cards"
+    };
     if (messageId) store.processedMessageIds.push(messageId);
     saveStore(store);
     return { ok: false, reason: "no_cards" };
@@ -334,6 +373,15 @@ async function handleGiftRequest(from, messageId) {
     remainingAfter
   });
 
+  store.lastGiftRequest = {
+    at: sentAt,
+    from: normalizePhone(from),
+    employee: employee.name,
+    card: card.fileBase,
+    remainingAfter,
+    result: "sent"
+  };
+
   if (messageId) store.processedMessageIds.push(messageId);
   saveStore(store);
 
@@ -345,11 +393,13 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v3-webhook-gift",
+    version: "v4-webhook-Gift",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
-    employees: store.employees.length
+    employees: store.employees.length,
+    lastInbound: store.lastInbound || null,
+    lastGiftRequest: store.lastGiftRequest || null
   });
 });
 
@@ -366,7 +416,9 @@ app.get("/health", (req, res) => {
     adminCopyPhone: ADMIN_COPY_PHONE,
     cardsAvailable: remainingAvailableCount(store),
     cardsTotal: store.cards.length,
-    employees: store.employees.length
+    employees: store.employees.length,
+    lastInbound: store.lastInbound || null,
+    lastGiftRequest: store.lastGiftRequest || null
   });
 });
 
@@ -539,13 +591,18 @@ app.post("/webhook", async (req, res) => {
         for (const msg of messages) {
           if (msg.type !== "text") continue;
 
-          const text = String(msg.text?.body || "").trim().toLowerCase();
+          const originalText = String(msg.text?.body || "").trim();
+          const text = originalText.toLowerCase();
           const from = normalizePhone(msg.from);
           const messageId = msg.id || "";
 
+          recordInboundMessage(from, originalText, msg.type, messageId);
+
           if (text === "gift") {
             const result = await handleGiftRequest(from, messageId);
-            console.log("gift request result:", result);
+            console.log("Gift request result:", result);
+          } else {
+            console.log("Inbound text ignored:", { from, text: originalText });
           }
         }
       }
@@ -556,5 +613,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v3 webhook gift running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v4 webhook Gift running on port ${PORT}`);
 });

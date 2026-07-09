@@ -1,9 +1,9 @@
-# Bringo WhatsApp Backend v3 - Webhook GIFT
+# Bringo WhatsApp Backend v4 - Webhook Gift
 
 Această versiune adaugă:
 - GET /webhook pentru verificarea Meta
 - POST /webhook pentru mesaje primite
-- comanda text `gift`
+- comanda text `Gift` — acceptă și `gift` / `GIFT`
 - stoc temporar/persistent local pe Render pentru carduri și angajați
 - notificare către administrator cu nume livrator, dată/oră, card și gifturi rămase
 - GET /state pentru sincronizarea aplicației online
@@ -28,3 +28,6 @@ Verify token pentru Meta:
 bringo_verify_2026
 
 După deploy, în Meta trebuie abonat webhook-ul la câmpul/messages field `messages`.
+
+Debug:
+- /health arată lastInbound și lastGiftRequest, ca să verifici dacă webhook-ul primește mesajele.
