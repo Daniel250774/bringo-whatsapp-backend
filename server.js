@@ -17,6 +17,7 @@ const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
+const WABA_ID = process.env.WABA_ID || "2003039456993786";
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
 
 const corsOptions = {
@@ -415,7 +416,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v5-state-fix",
+    version: "v6-waba-subscribe",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -438,6 +439,7 @@ app.get("/health", (req, res) => {
     templateName: TEMPLATE_NAME || null,
     webhookVerifyTokenPresent: Boolean(WEBHOOK_VERIFY_TOKEN),
     adminCopyPhone: ADMIN_COPY_PHONE,
+    wabaId: WABA_ID,
     cardsAvailable: remainingAvailableCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
@@ -540,6 +542,72 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
   } catch (err) {
     console.error("sync-state error", err);
     res.status(500).json({ ok: false, error: err.message || "Eroare sync-state" });
+  }
+});
+
+async function subscribeWabaToApp() {
+  const missing = requireConfig();
+  if (missing.length) {
+    throw new Error("Lipsesc variabile Render: " + missing.join(", "));
+  }
+
+  if (!WABA_ID) {
+    throw new Error("Lipsește WABA_ID.");
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${WABA_ID}/subscribed_apps`;
+
+  const response = await axios.post(url, {}, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    }
+  });
+
+  return response.data;
+}
+
+app.get("/subscribe-waba", checkApiKey, async (req, res) => {
+  try {
+    const result = await subscribeWabaToApp();
+    res.json({
+      ok: true,
+      message: "WABA a fost subscrisă la aplicația curentă pentru webhook-uri.",
+      wabaId: WABA_ID,
+      graphVersion: GRAPH_VERSION,
+      result
+    });
+  } catch (err) {
+    const meta = err.response?.data;
+    console.error("subscribe-waba error:", meta || err.message || err);
+    res.status(500).json({
+      ok: false,
+      error: meta?.error?.message || err.message || "Eroare subscribe-waba",
+      meta,
+      wabaId: WABA_ID
+    });
+  }
+});
+
+app.post("/subscribe-waba", checkApiKey, async (req, res) => {
+  try {
+    const result = await subscribeWabaToApp();
+    res.json({
+      ok: true,
+      message: "WABA a fost subscrisă la aplicația curentă pentru webhook-uri.",
+      wabaId: WABA_ID,
+      graphVersion: GRAPH_VERSION,
+      result
+    });
+  } catch (err) {
+    const meta = err.response?.data;
+    console.error("subscribe-waba error:", meta || err.message || err);
+    res.status(500).json({
+      ok: false,
+      error: meta?.error?.message || err.message || "Eroare subscribe-waba",
+      meta,
+      wabaId: WABA_ID
+    });
   }
 });
 
@@ -688,5 +756,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v5 state fix running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v6 WABA subscribe running on port ${PORT}`);
 });

@@ -34,3 +34,10 @@ Debug:
 
 
 Backend v5 state fix: /reset-state, /mark-card-sent, replaceMode=true la /sync-state, cardsSent în /health.
+
+Backend v6 - Subscribe WABA:
+- adaugă GET/POST /subscribe-waba
+- folosește WABA_ID=2003039456993786 implicit sau variabila Render WABA_ID
+- endpoint-ul face POST către Graph API /<WABA_ID>/subscribed_apps pentru a lega WABA la aplicația curentă.
+După deploy deschide:
+https://bringo-whatsapp-backend.onrender.com/subscribe-waba
