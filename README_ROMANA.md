@@ -50,3 +50,8 @@ Backend v8 - eligibilitate și text către livrator:
 - comanda Gift/Ghift trimite către livrator imaginea cu caption: "Ai primit un gift card în valoare de 2.000 lei."
 - dacă livratorul este blocat/neeligibil, primește mesajul:
   "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul."
+
+Backend v9 - valoare din fiecare gift:
+- caption-ul către livrator este dinamic: "Ai primit un gift card în valoare de X lei."
+- X vine din valoarea cardului sincronizată din aplicație.
+- notificarea către administrator include și valoarea cardului.

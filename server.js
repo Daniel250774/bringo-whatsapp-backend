@@ -287,6 +287,20 @@ function markCardSent(store, card, employee, source) {
   return { sentAt, remainingAfter, sentTotal: sentCount(store) };
 }
 
+function formatGiftValueForText(value) {
+  const raw = String(value || "").trim();
+  const digits = raw.replace(/[^0-9]/g, "");
+  const n = parseInt(digits || "0", 10);
+  if (Number.isFinite(n) && n > 0) {
+    return n.toLocaleString("ro-RO") + " lei";
+  }
+  return raw || "2.000 lei";
+}
+
+function buildEmployeeGiftCaption(card) {
+  return "Ai primit un gift card în valoare de " + formatGiftValueForText(card && card.value) + ".";
+}
+
 function buildAdminCaption(employee, card, remainingAfter) {
   const now = new Date();
   const dateText = now.toLocaleDateString("ro-RO", { timeZone: "Europe/Bucharest" });
@@ -304,6 +318,7 @@ function buildAdminCaption(employee, card, remainingAfter) {
     "Data: " + dateText + "\n" +
     "Ora: " + timeText + "\n" +
     "Card: " + cardLabel + "\n" +
+    "Valoare: " + formatGiftValueForText(card.value) + "\n" +
     "Gifturi rămase: " + remainingAfter
   );
 }
@@ -389,7 +404,7 @@ async function handleGiftRequest(from, messageId) {
   const image = dataUrlToBuffer(card.imageDataUrl);
   const mediaId = await uploadMediaBuffer(image.buffer, image.mimetype, (card.fileBase || "card") + ".jpg");
 
-  await sendImageMessage(from, mediaId, EMPLOYEE_GIFT_CAPTION);
+  await sendImageMessage(from, mediaId, buildEmployeeGiftCaption(card));
 
   const markResult = markCardSent(store, card, employee, "whatsapp_gift_request");
   const sentAt = markResult.sentAt;
@@ -422,7 +437,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v8-eligibility-caption",
+    version: "v9-value-caption",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -763,5 +778,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v8 eligibility caption running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v9 value caption running on port ${PORT}`);
 });
