@@ -60,3 +60,10 @@ Backend v10 - modificare valoare card:
 - adaugă POST /update-card-value
 - permite modificarea valorii pentru carduri disponibile și carduri deja trimise
 - actualizează și istoricul sentLog, când cardul există acolo
+
+Backend v11 - pauză automată livratori:
+- fiecare livrator poate avea cooldownMinutes configurabil;
+- după primirea unui Gift/Ghift, livratorul primește automat pauză temporară;
+- dacă cere din nou prea repede, primește mesaj cu ora la care poate solicita următorul gift;
+- mark-card-sent aplică pauza și pentru trimiterile manuale din aplicație;
+- /state returnează employeeList cu blockedUntil, lastGiftAt și cooldownMinutes.

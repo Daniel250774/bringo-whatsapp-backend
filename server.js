@@ -19,6 +19,7 @@ const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
 const EMPLOYEE_GIFT_CAPTION = process.env.EMPLOYEE_GIFT_CAPTION || "Ai primit un gift card în valoare de 2.000 lei.";
 const WABA_ID = process.env.WABA_ID || "2003039456993786";
+const DEFAULT_GIFT_COOLDOWN_MINUTES = parseInt(process.env.DEFAULT_GIFT_COOLDOWN_MINUTES || "60", 10);
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
 
 const corsOptions = {
@@ -235,6 +236,89 @@ function publicCards(cards) {
   }));
 }
 
+function publicEmployees(employees) {
+  return (employees || []).map(emp => ({
+    name: emp.name || "",
+    phone: emp.phone || "",
+    displayPhone: emp.displayPhone || displayPhone(emp.phone),
+    color: emp.color || "#16a34a",
+    blocked: Boolean(emp.blocked),
+    cooldownMinutes: getCooldownMinutes(emp),
+    blockedUntil: emp.blockedUntil || "",
+    lastGiftAt: emp.lastGiftAt || ""
+  }));
+}
+
+function parseCooldownMinutes(value, fallback = DEFAULT_GIFT_COOLDOWN_MINUTES) {
+  const n = parseInt(String(value ?? "").replace(/[^0-9]/g, ""), 10);
+  if (Number.isFinite(n) && n >= 0) return Math.min(n, 10080);
+  const f = parseInt(String(fallback ?? ""), 10);
+  return Number.isFinite(f) && f >= 0 ? Math.min(f, 10080) : 60;
+}
+
+function getCooldownMinutes(employee) {
+  return parseCooldownMinutes(employee?.cooldownMinutes, DEFAULT_GIFT_COOLDOWN_MINUTES);
+}
+
+function parseTimeMs(value) {
+  const t = Date.parse(String(value || ""));
+  return Number.isFinite(t) ? t : 0;
+}
+
+function getTemporaryBlock(employee) {
+  const untilMs = parseTimeMs(employee?.blockedUntil);
+  const nowMs = Date.now();
+  if (untilMs > nowMs) {
+    return {
+      active: true,
+      untilIso: new Date(untilMs).toISOString(),
+      minutesLeft: Math.max(1, Math.ceil((untilMs - nowMs) / 60000))
+    };
+  }
+  return { active: false, untilIso: "", minutesLeft: 0 };
+}
+
+function clearExpiredCooldown(employee) {
+  if (!employee) return;
+  const untilMs = parseTimeMs(employee.blockedUntil);
+  if (untilMs && untilMs <= Date.now()) {
+    employee.blockedUntil = "";
+  }
+}
+
+function applyCooldownToEmployee(employee, sentAtIso) {
+  if (!employee) return "";
+  const minutes = getCooldownMinutes(employee);
+  employee.lastGiftAt = sentAtIso || new Date().toISOString();
+
+  if (minutes <= 0) {
+    employee.blockedUntil = "";
+    return "";
+  }
+
+  const baseMs = parseTimeMs(sentAtIso) || Date.now();
+  const untilIso = new Date(baseMs + minutes * 60000).toISOString();
+  employee.blockedUntil = untilIso;
+  return untilIso;
+}
+
+function formatCooldownTimeForRo(untilIso) {
+  const until = new Date(untilIso);
+  return until.toLocaleTimeString("ro-RO", {
+    timeZone: "Europe/Bucharest",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function buildCooldownMessage(employee, block) {
+  return (
+    "Ai primit deja un gift. Pentru a evita primirea de două ori prea repede, următorul gift poate fi solicitat după ora " +
+    formatCooldownTimeForRo(block.untilIso) +
+    " (în aproximativ " + block.minutesLeft + " min). Dacă este o urgență, contactează administratorul."
+  );
+}
+
 function findEmployeeByPhone(store, phone) {
   const normalized = normalizePhone(phone);
   return (store.employees || []).find(emp => normalizePhone(emp.phone) === normalized) || null;
@@ -380,6 +464,23 @@ async function handleGiftRequest(from, messageId) {
     return { ok: false, reason: "employee_blocked" };
   }
 
+  clearExpiredCooldown(employee);
+  const temporaryBlock = getTemporaryBlock(employee);
+  if (temporaryBlock.active) {
+    await sendTextMessage(from, buildCooldownMessage(employee, temporaryBlock));
+    store.lastGiftRequest = {
+      at: new Date().toISOString(),
+      from: normalizePhone(from),
+      employee: employee.name,
+      result: "employee_cooldown",
+      blockedUntil: temporaryBlock.untilIso,
+      minutesLeft: temporaryBlock.minutesLeft
+    };
+    if (messageId) store.processedMessageIds.push(messageId);
+    saveStore(store);
+    return { ok: false, reason: "employee_cooldown", blockedUntil: temporaryBlock.untilIso };
+  }
+
   const card = getFirstAvailableCard(store);
   if (!card) {
     await sendTextMessage(from, "Nu mai sunt gifturi disponibile momentan.");
@@ -410,6 +511,7 @@ async function handleGiftRequest(from, messageId) {
   const markResult = markCardSent(store, card, employee, "whatsapp_gift_request");
   const sentAt = markResult.sentAt;
   const remainingAfter = markResult.remainingAfter;
+  const blockedUntil = applyCooldownToEmployee(employee, sentAt);
 
   const adminCaption = buildAdminCaption(employee, card, remainingAfter);
   try {
@@ -424,6 +526,8 @@ async function handleGiftRequest(from, messageId) {
     employee: employee.name,
     card: card.fileBase,
     remainingAfter,
+    cooldownMinutes: getCooldownMinutes(employee),
+    blockedUntil,
     result: "sent"
   };
 
@@ -438,13 +542,14 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v10-update-card-value",
+    version: "v11-cooldown-livratori",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
+    employeesInCooldown: (store.employees || []).filter(emp => getTemporaryBlock(emp).active).length,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
   });
@@ -463,6 +568,7 @@ app.get("/health", (req, res) => {
     adminCopyPhone: ADMIN_COPY_PHONE,
     wabaId: WABA_ID,
     employeeGiftCaption: EMPLOYEE_GIFT_CAPTION,
+    defaultGiftCooldownMinutes: DEFAULT_GIFT_COOLDOWN_MINUTES,
     cardsAvailable: remainingAvailableCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
@@ -481,6 +587,7 @@ app.get("/state", checkApiKey, (req, res) => {
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     cards: publicCards(store.cards),
+    employeeList: publicEmployees(store.employees),
     sentLog: store.sentLog || []
   });
 });
@@ -488,22 +595,36 @@ app.get("/state", checkApiKey, (req, res) => {
 app.post("/sync-state", checkApiKey, async (req, res) => {
   try {
     const replaceMode = Boolean(req.body.replaceMode);
-    const store = replaceMode ? defaultStore() : loadStore();
+    const previousStore = loadStore();
+    const store = replaceMode ? defaultStore() : previousStore;
     const now = new Date().toISOString();
+
+    const previousEmployeesByPhone = new Map(
+      (previousStore.employees || []).map(emp => [normalizePhone(emp.phone), emp])
+    );
 
     const incomingEmployees = Array.isArray(req.body.employees) ? req.body.employees : [];
     store.employees = incomingEmployees
       .map(emp => {
         const phone = normalizePhone(emp.phone);
+        const previous = previousEmployeesByPhone.get(phone) || {};
+        const hasBlockedUntil = Object.prototype.hasOwnProperty.call(emp, "blockedUntil");
+        const hasLastGiftAt = Object.prototype.hasOwnProperty.call(emp, "lastGiftAt");
+
         return {
           name: String(emp.name || "").trim().toUpperCase(),
           phone,
           displayPhone: emp.displayPhone || displayPhone(phone),
           color: emp.color || "#16a34a",
-          blocked: Boolean(emp.blocked)
+          blocked: Boolean(emp.blocked),
+          cooldownMinutes: parseCooldownMinutes(emp.cooldownMinutes, previous.cooldownMinutes ?? DEFAULT_GIFT_COOLDOWN_MINUTES),
+          blockedUntil: hasBlockedUntil ? String(emp.blockedUntil || "") : String(previous.blockedUntil || ""),
+          lastGiftAt: hasLastGiftAt ? String(emp.lastGiftAt || "") : String(previous.lastGiftAt || "")
         };
       })
       .filter(emp => emp.name && /^40\d{9}$/.test(emp.phone));
+
+    store.employees.forEach(clearExpiredCooldown);
 
     const incomingCards = Array.isArray(req.body.cards) ? req.body.cards : [];
     const existingByCode = new Map((store.cards || []).filter(c => c.code).map(c => [String(c.code), c]));
@@ -710,6 +831,15 @@ app.post("/mark-card-sent", checkApiKey, (req, res) => {
     }
 
     const result = markCardSent(store, card, employee, req.body.source || "manual_html");
+
+    const storeEmployee = findEmployeeByPhone(store, employee.phone);
+    let employeeBlockedUntil = "";
+    let employeeCooldownMinutes = DEFAULT_GIFT_COOLDOWN_MINUTES;
+    if (storeEmployee) {
+      employeeBlockedUntil = applyCooldownToEmployee(storeEmployee, result.sentAt);
+      employeeCooldownMinutes = getCooldownMinutes(storeEmployee);
+    }
+
     saveStore(store);
 
     res.json({
@@ -718,6 +848,8 @@ app.post("/mark-card-sent", checkApiKey, (req, res) => {
       remainingAfter: result.remainingAfter,
       sentTotal: result.sentTotal,
       cardsTotal: store.cards.length,
+      employeeBlockedUntil,
+      employeeCooldownMinutes,
       card: publicCards([card])[0]
     });
   } catch (err) {
@@ -824,5 +956,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v10 update card value running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v11 cooldown livratori running on port ${PORT}`);
 });
