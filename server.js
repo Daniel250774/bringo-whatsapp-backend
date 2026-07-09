@@ -17,6 +17,7 @@ const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
+const EMPLOYEE_GIFT_CAPTION = process.env.EMPLOYEE_GIFT_CAPTION || "Ai primit un gift card în valoare de 2.000 lei.";
 const WABA_ID = process.env.WABA_ID || "2003039456993786";
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
 
@@ -351,7 +352,7 @@ async function handleGiftRequest(from, messageId) {
   }
 
   if (employee.blocked) {
-    await sendTextMessage(from, "Nu poți primi gift momentan. Contactează administratorul.");
+    await sendTextMessage(from, "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul.");
     store.lastGiftRequest = {
       at: new Date().toISOString(),
       from: normalizePhone(from),
@@ -388,7 +389,7 @@ async function handleGiftRequest(from, messageId) {
   const image = dataUrlToBuffer(card.imageDataUrl);
   const mediaId = await uploadMediaBuffer(image.buffer, image.mimetype, (card.fileBase || "card") + ".jpg");
 
-  await sendImageMessage(from, mediaId, "");
+  await sendImageMessage(from, mediaId, EMPLOYEE_GIFT_CAPTION);
 
   const markResult = markCardSent(store, card, employee, "whatsapp_gift_request");
   const sentAt = markResult.sentAt;
@@ -421,7 +422,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v7-command-aliases",
+    version: "v8-eligibility-caption",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -445,6 +446,7 @@ app.get("/health", (req, res) => {
     webhookVerifyTokenPresent: Boolean(WEBHOOK_VERIFY_TOKEN),
     adminCopyPhone: ADMIN_COPY_PHONE,
     wabaId: WABA_ID,
+    employeeGiftCaption: EMPLOYEE_GIFT_CAPTION,
     cardsAvailable: remainingAvailableCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
@@ -761,5 +763,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v7 command aliases running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v8 eligibility caption running on port ${PORT}`);
 });

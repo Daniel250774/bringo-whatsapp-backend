@@ -45,3 +45,8 @@ https://bringo-whatsapp-backend.onrender.com/subscribe-waba
 Backend v7 - Command aliases:
 - comanda automată acceptă acum atât `Gift`, cât și `Ghift`
 - acceptă indiferent de litere mari/mici: gift, Gift, GIFT, ghift, Ghift, GHIFT
+
+Backend v8 - eligibilitate și text către livrator:
+- comanda Gift/Ghift trimite către livrator imaginea cu caption: "Ai primit un gift card în valoare de 2.000 lei."
+- dacă livratorul este blocat/neeligibil, primește mesajul:
+  "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul."
