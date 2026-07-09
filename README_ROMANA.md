@@ -55,3 +55,8 @@ Backend v9 - valoare din fiecare gift:
 - caption-ul către livrator este dinamic: "Ai primit un gift card în valoare de X lei."
 - X vine din valoarea cardului sincronizată din aplicație.
 - notificarea către administrator include și valoarea cardului.
+
+Backend v10 - modificare valoare card:
+- adaugă POST /update-card-value
+- permite modificarea valorii pentru carduri disponibile și carduri deja trimise
+- actualizează și istoricul sentLog, când cardul există acolo

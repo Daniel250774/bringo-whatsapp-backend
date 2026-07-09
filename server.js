@@ -277,6 +277,7 @@ function markCardSent(store, card, employee, source) {
     code: card.code,
     last4: card.last4,
     fileBase: card.fileBase,
+    value: card.value,
     sentAt,
     sentTo: card.sentTo,
     sentPhone: card.sentPhone,
@@ -437,7 +438,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v9-value-caption",
+    version: "v10-update-card-value",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -639,6 +640,51 @@ app.post("/reset-state", checkApiKey, (req, res) => {
   res.json({ ok: true, reset: true, cardsAvailable: 0, cardsSent: 0, cardsTotal: 0, employees: 0 });
 });
 
+app.post("/update-card-value", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const lookup = req.body.code || req.body.id || req.body.fileBase || req.body.last4;
+    const card = findCardByCodeOrId(store, lookup);
+
+    if (!card) {
+      return res.status(404).json({
+        ok: false,
+        error: "Cardul nu există în backend. Apasă Sincronizează Gift și încearcă din nou."
+      });
+    }
+
+    const newValue = formatGiftValueForText(req.body.value);
+    card.value = newValue;
+    card.updatedAt = new Date().toISOString();
+
+    if (Array.isArray(store.sentLog)) {
+      store.sentLog = store.sentLog.map(item => {
+        const match =
+          String(item.code || "") === String(card.code || "") ||
+          String(item.id || "") === String(card.id || "") ||
+          String(item.fileBase || "") === String(card.fileBase || "") ||
+          String(item.last4 || "") === String(card.last4 || "");
+        return match ? { ...item, value: newValue } : item;
+      });
+    }
+
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      message: "Valoarea cardului a fost actualizată.",
+      value: newValue,
+      cardsAvailable: remainingAvailableCount(store),
+      cardsSent: sentCount(store),
+      cardsTotal: store.cards.length,
+      card: publicCards([card])[0]
+    });
+  } catch (err) {
+    console.error("update-card-value error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare update-card-value" });
+  }
+});
+
 app.post("/mark-card-sent", checkApiKey, (req, res) => {
   try {
     const store = loadStore();
@@ -778,5 +824,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v9 value caption running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v10 update card value running on port ${PORT}`);
 });
