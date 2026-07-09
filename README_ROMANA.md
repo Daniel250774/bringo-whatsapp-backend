@@ -31,3 +31,6 @@ După deploy, în Meta trebuie abonat webhook-ul la câmpul/messages field `mess
 
 Debug:
 - /health arată lastInbound și lastGiftRequest, ca să verifici dacă webhook-ul primește mesajele.
+
+
+Backend v5 state fix: /reset-state, /mark-card-sent, replaceMode=true la /sync-state, cardsSent în /health.

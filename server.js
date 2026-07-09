@@ -246,6 +246,45 @@ function remainingAvailableCount(store) {
   return (store.cards || []).filter(c => (c.status || "available") !== "sent").length;
 }
 
+function sentCount(store) {
+  return (store.cards || []).filter(c => (c.status || "available") === "sent").length;
+}
+
+function findCardByCodeOrId(store, value) {
+  const key = String(value || "").trim();
+  return (store.cards || []).find(c =>
+    String(c.code || "") === key ||
+    String(c.id || "") === key ||
+    String(c.fileBase || "") === key ||
+    String(c.last4 || "") === key
+  ) || null;
+}
+
+function markCardSent(store, card, employee, source) {
+  const sentAt = new Date().toISOString();
+  card.status = "sent";
+  card.sentAt = sentAt;
+  card.sentTo = employee?.name || "";
+  card.sentPhone = employee?.displayPhone || (employee?.phone ? displayPhone(employee.phone) : "");
+  card.sentSource = source || "manual_html";
+
+  const remainingAfter = remainingAvailableCount(store);
+
+  store.sentLog.push({
+    id: card.id,
+    code: card.code,
+    last4: card.last4,
+    fileBase: card.fileBase,
+    sentAt,
+    sentTo: card.sentTo,
+    sentPhone: card.sentPhone,
+    sentSource: card.sentSource,
+    remainingAfter
+  });
+
+  return { sentAt, remainingAfter, sentTotal: sentCount(store) };
+}
+
 function buildAdminCaption(employee, card, remainingAfter) {
   const now = new Date();
   const dateText = now.toLocaleDateString("ro-RO", { timeZone: "Europe/Bucharest" });
@@ -345,14 +384,9 @@ async function handleGiftRequest(from, messageId) {
 
   await sendImageMessage(from, mediaId, "");
 
-  const sentAt = new Date().toISOString();
-  card.status = "sent";
-  card.sentAt = sentAt;
-  card.sentTo = employee.name;
-  card.sentPhone = employee.displayPhone || displayPhone(employee.phone);
-  card.sentSource = "whatsapp_gift_request";
-
-  const remainingAfter = remainingAvailableCount(store);
+  const markResult = markCardSent(store, card, employee, "whatsapp_gift_request");
+  const sentAt = markResult.sentAt;
+  const remainingAfter = markResult.remainingAfter;
 
   const adminCaption = buildAdminCaption(employee, card, remainingAfter);
   try {
@@ -360,18 +394,6 @@ async function handleGiftRequest(from, messageId) {
   } catch (e) {
     console.error("admin copy failed:", e.response?.data || e.message);
   }
-
-  store.sentLog.push({
-    id: card.id,
-    code: card.code,
-    last4: card.last4,
-    fileBase: card.fileBase,
-    sentAt,
-    sentTo: employee.name,
-    sentPhone: employee.displayPhone || displayPhone(employee.phone),
-    sentSource: "whatsapp_gift_request",
-    remainingAfter
-  });
 
   store.lastGiftRequest = {
     at: sentAt,
@@ -393,10 +415,12 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v4-webhook-Gift",
+    version: "v5-state-fix",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
+    cardsSent: sentCount(store),
+    cardsTotal: store.cards.length,
     employees: store.employees.length,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
@@ -415,6 +439,7 @@ app.get("/health", (req, res) => {
     webhookVerifyTokenPresent: Boolean(WEBHOOK_VERIFY_TOKEN),
     adminCopyPhone: ADMIN_COPY_PHONE,
     cardsAvailable: remainingAvailableCount(store),
+    cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     lastInbound: store.lastInbound || null,
@@ -427,6 +452,7 @@ app.get("/state", checkApiKey, (req, res) => {
   res.json({
     ok: true,
     cardsAvailable: remainingAvailableCount(store),
+    cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     cards: publicCards(store.cards),
@@ -436,7 +462,8 @@ app.get("/state", checkApiKey, (req, res) => {
 
 app.post("/sync-state", checkApiKey, async (req, res) => {
   try {
-    const store = loadStore();
+    const replaceMode = Boolean(req.body.replaceMode);
+    const store = replaceMode ? defaultStore() : loadStore();
     const now = new Date().toISOString();
 
     const incomingEmployees = Array.isArray(req.body.employees) ? req.body.employees : [];
@@ -506,12 +533,60 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
     res.json({
       ok: true,
       cardsAvailable: remainingAvailableCount(store),
+      cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       employees: store.employees.length
     });
   } catch (err) {
     console.error("sync-state error", err);
     res.status(500).json({ ok: false, error: err.message || "Eroare sync-state" });
+  }
+});
+
+app.post("/reset-state", checkApiKey, (req, res) => {
+  const store = defaultStore();
+  saveStore(store);
+  res.json({ ok: true, reset: true, cardsAvailable: 0, cardsSent: 0, cardsTotal: 0, employees: 0 });
+});
+
+app.post("/mark-card-sent", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const card = findCardByCodeOrId(store, req.body.code || req.body.id || req.body.fileBase || req.body.last4);
+    if (!card) return res.status(404).json({ ok: false, error: "Cardul nu există în backend. Apasă Sincronizează Gift." });
+
+    const employee = {
+      name: String(req.body.employeeName || "").trim().toUpperCase(),
+      phone: normalizePhone(req.body.employeePhone || ""),
+      displayPhone: req.body.employeeDisplayPhone || displayPhone(req.body.employeePhone || "")
+    };
+
+    if ((card.status || "available") === "sent") {
+      saveStore(store);
+      return res.json({
+        ok: true,
+        alreadySent: true,
+        remainingAfter: remainingAvailableCount(store),
+        sentTotal: sentCount(store),
+        cardsTotal: store.cards.length,
+        card: publicCards([card])[0]
+      });
+    }
+
+    const result = markCardSent(store, card, employee, req.body.source || "manual_html");
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      alreadySent: false,
+      remainingAfter: result.remainingAfter,
+      sentTotal: result.sentTotal,
+      cardsTotal: store.cards.length,
+      card: publicCards([card])[0]
+    });
+  } catch (err) {
+    console.error("mark-card-sent error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare mark-card-sent" });
   }
 });
 
@@ -613,5 +688,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v4 webhook Gift running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v5 state fix running on port ${PORT}`);
 });
