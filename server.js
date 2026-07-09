@@ -307,6 +307,11 @@ function buildAdminCaption(employee, card, remainingAfter) {
   );
 }
 
+function isGiftCommand(text) {
+  const value = String(text || "").trim().toLowerCase();
+  return value === "gift" || value === "ghift";
+}
+
 function recordInboundMessage(from, text, type, messageId) {
   const store = loadStore();
   store.lastInbound = {
@@ -416,7 +421,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v6-waba-subscribe",
+    version: "v7-command-aliases",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -741,7 +746,7 @@ app.post("/webhook", async (req, res) => {
 
           recordInboundMessage(from, originalText, msg.type, messageId);
 
-          if (text === "gift") {
+          if (isGiftCommand(text)) {
             const result = await handleGiftRequest(from, messageId);
             console.log("Gift request result:", result);
           } else {
@@ -756,5 +761,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v6 WABA subscribe running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v7 command aliases running on port ${PORT}`);
 });

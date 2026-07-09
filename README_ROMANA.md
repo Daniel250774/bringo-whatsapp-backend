@@ -41,3 +41,7 @@ Backend v6 - Subscribe WABA:
 - endpoint-ul face POST către Graph API /<WABA_ID>/subscribed_apps pentru a lega WABA la aplicația curentă.
 După deploy deschide:
 https://bringo-whatsapp-backend.onrender.com/subscribe-waba
+
+Backend v7 - Command aliases:
+- comanda automată acceptă acum atât `Gift`, cât și `Ghift`
+- acceptă indiferent de litere mari/mici: gift, Gift, GIFT, ghift, Ghift, GHIFT
