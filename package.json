@@ -1,7 +1,7 @@
 {
   "name": "bringo-whatsapp-backend",
-  "version": "1.0.1",
-  "description": "Backend pentru trimitere carduri Bringo prin WhatsApp Cloud API",
+  "version": "1.0.3",
+  "description": "Backend Bringo WhatsApp API cu webhook gift",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

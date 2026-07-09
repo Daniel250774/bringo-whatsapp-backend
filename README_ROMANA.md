@@ -1,16 +1,30 @@
-# Bringo WhatsApp Backend v2
+# Bringo WhatsApp Backend v3 - Webhook GIFT
 
-Modificarea principală față de v1:
-- CORS permis explicit cu origin '*'
-- adăugat app.options('*') pentru cereri OPTIONS/preflight
-- funcționează mai bine cu HTML deschis local de pe laptop/telefon
+Această versiune adaugă:
+- GET /webhook pentru verificarea Meta
+- POST /webhook pentru mesaje primite
+- comanda text `gift`
+- stoc temporar/persistent local pe Render pentru carduri și angajați
+- notificare către administrator cu nume livrator, dată/oră, card și gifturi rămase
+- GET /state pentru sincronizarea aplicației online
+- POST /sync-state pentru încărcarea cardurilor disponibile în backend
 
-În Render:
-Build Command: npm install
-Start Command: npm start
-
-Environment Variables:
+Variabile Render necesare:
 WHATSAPP_TOKEN
 PHONE_NUMBER_ID
 GRAPH_API_VERSION=v23.0
-CORS_ORIGIN=*  (nu mai este folosit direct, dar poate rămâne)
+WEBHOOK_VERIFY_TOKEN=bringo_verify_2026
+ADMIN_COPY_PHONE=0766299556
+
+Opțional:
+BACKEND_API_KEY
+TEMPLATE_NAME
+TEMPLATE_LANGUAGE=ro
+
+Callback URL pentru Meta:
+https://bringo-whatsapp-backend.onrender.com/webhook
+
+Verify token pentru Meta:
+bringo_verify_2026
+
+După deploy, în Meta trebuie abonat webhook-ul la câmpul/messages field `messages`.
