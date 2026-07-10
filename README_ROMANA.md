@@ -106,3 +106,9 @@ Backend v16 - Supabase Database Edition:
   /export-store
   /reload-db
 - Fișierul local rămâne doar cache/backup local, nu sursa principală.
+
+Backend v17 - Supabase Axios Diagnostics:
+- nu mai folosește supabase-js pentru conexiunea la Supabase;
+- folosește axios direct către REST API, cu timeout și mesaje de eroare mai clare;
+- adaugă /supabase-test pentru verificare rapidă a conexiunii Supabase;
+- util când apare eroarea Node/undici: TypeError: fetch failed.
