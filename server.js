@@ -542,7 +542,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v11-cooldown-livratori",
+    version: "v12-card-sync-preserve-employees",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -755,10 +755,127 @@ app.post("/subscribe-waba", checkApiKey, async (req, res) => {
   }
 });
 
+app.post("/clear-cards", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    store.cards = [];
+    store.sentLog = [];
+    store.lastGiftRequest = null;
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      message: "Cardurile au fost șterse, livratorii au fost păstrați.",
+      cardsAvailable: 0,
+      cardsSent: 0,
+      cardsTotal: 0,
+      employees: store.employees.length
+    });
+  } catch (err) {
+    console.error("clear-cards error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare clear-cards" });
+  }
+});
+
+app.post("/upsert-cards", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const now = new Date().toISOString();
+    const incomingCards = Array.isArray(req.body.cards) ? req.body.cards : [];
+
+    if (typeof req.body.adminPhone !== "undefined") {
+      store.adminPhone = normalizePhone(req.body.adminPhone || ADMIN_COPY_PHONE);
+    }
+
+    const existingByCode = new Map((store.cards || []).filter(c => c.code).map(c => [String(c.code), c]));
+    let added = 0;
+    let updated = 0;
+    let ignored = 0;
+
+    for (const raw of incomingCards) {
+      const code = String(raw.code || "").trim();
+      if (!code) {
+        ignored++;
+        continue;
+      }
+
+      const existing = existingByCode.get(code);
+      const incomingStatus = raw.status === "sent" ? "sent" : "available";
+
+      if (existing) {
+        existing.id = String(raw.id || existing.id || code);
+        existing.last4 = String(raw.last4 || existing.last4 || code.slice(-4));
+        existing.value = String(raw.value || existing.value || "");
+        existing.fileBase = String(raw.fileBase || existing.fileBase || code.slice(-4));
+        existing.imageDataUrl = raw.imageDataUrl || existing.imageDataUrl || "";
+        existing.syncedAt = now;
+
+        // Nu transformăm un card trimis în disponibil prin upsert simplu.
+        // Revino disponibil are sincronizarea lui separată.
+        if ((existing.status || "available") !== "sent") {
+          existing.status = incomingStatus;
+          existing.sentAt = incomingStatus === "sent" ? (raw.sentAt || existing.sentAt || now) : "";
+          existing.sentTo = incomingStatus === "sent" ? (raw.sentTo || existing.sentTo || "") : "";
+          existing.sentPhone = incomingStatus === "sent" ? (raw.sentPhone || existing.sentPhone || "") : "";
+          existing.sentSource = incomingStatus === "sent" ? (raw.sentSource || existing.sentSource || "manual_html") : "";
+        }
+
+        updated++;
+      } else {
+        const card = {
+          id: String(raw.id || code),
+          code,
+          last4: String(raw.last4 || code.slice(-4)),
+          value: String(raw.value || ""),
+          fileBase: String(raw.fileBase || code.slice(-4)),
+          imageDataUrl: raw.imageDataUrl || "",
+          status: incomingStatus,
+          sentAt: incomingStatus === "sent" ? (raw.sentAt || now) : "",
+          sentTo: incomingStatus === "sent" ? (raw.sentTo || "") : "",
+          sentPhone: incomingStatus === "sent" ? (raw.sentPhone || "") : "",
+          sentSource: incomingStatus === "sent" ? (raw.sentSource || "manual_html") : "",
+          syncedAt: now
+        };
+        store.cards.push(card);
+        existingByCode.set(code, card);
+        added++;
+      }
+    }
+
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      message: "Cardurile au fost adăugate/actualizate fără ștergerea livratorilor.",
+      added,
+      updated,
+      ignored,
+      cardsAvailable: remainingAvailableCount(store),
+      cardsSent: sentCount(store),
+      cardsTotal: store.cards.length,
+      employees: store.employees.length
+    });
+  } catch (err) {
+    console.error("upsert-cards error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare upsert-cards" });
+  }
+});
+
 app.post("/reset-state", checkApiKey, (req, res) => {
+  const previous = loadStore();
   const store = defaultStore();
+  store.employees = previous.employees || [];
+  store.adminPhone = previous.adminPhone || normalizePhone(ADMIN_COPY_PHONE);
   saveStore(store);
-  res.json({ ok: true, reset: true, cardsAvailable: 0, cardsSent: 0, cardsTotal: 0, employees: 0 });
+  res.json({
+    ok: true,
+    reset: true,
+    message: "Backend resetat pentru carduri. Livratorii au fost păstrați.",
+    cardsAvailable: 0,
+    cardsSent: 0,
+    cardsTotal: 0,
+    employees: store.employees.length
+  });
 });
 
 app.post("/update-card-value", checkApiKey, (req, res) => {
@@ -956,5 +1073,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v11 cooldown livratori running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v12 card sync preserve employees running on port ${PORT}`);
 });

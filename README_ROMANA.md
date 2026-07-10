@@ -67,3 +67,8 @@ Backend v11 - pauză automată livratori:
 - dacă cere din nou prea repede, primește mesaj cu ora la care poate solicita următorul gift;
 - mark-card-sent aplică pauza și pentru trimiterile manuale din aplicație;
 - /state returnează employeeList cu blockedUntil, lastGiftAt și cooldownMinutes.
+
+Backend v12 - sincronizare carduri fără ștergerea livratorilor:
+- adaugă POST /upsert-cards pentru încărcarea PDF-urilor de pe telefon/laptop fără să șteargă ce există deja;
+- adaugă POST /clear-cards pentru golirea doar a cardurilor, cu păstrarea livratorilor;
+- /reset-state păstrează livratorii ca măsură de siguranță.
