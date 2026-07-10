@@ -90,3 +90,19 @@ Backend v15 - backup și protecție:
 - POST /restore-backup restaurează un backup;
 - GET /export-store descarcă baza curentă;
 - păstrează datele necunoscute la încărcarea store-ului, inclusiv timestamps.
+
+
+Backend v16 - Supabase Database Edition:
+- Folosește o bază de date online Supabase ca sursă principală.
+- Datele nu mai depind de fișierul local Render.
+- Variabile Render necesare:
+  SUPABASE_URL
+  SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_STORE_ID=bringo-main
+- Endpoint-uri utile:
+  /db-status
+  /backups
+  /restore-backup?id=<id>
+  /export-store
+  /reload-db
+- Fișierul local rămâne doar cache/backup local, nu sursa principală.

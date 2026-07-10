@@ -5,6 +5,7 @@ const axios = require("axios");
 const FormData = require("form-data");
 const fs = require("fs");
 const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
@@ -23,6 +24,15 @@ const DEFAULT_GIFT_COOLDOWN_MINUTES = parseInt(process.env.DEFAULT_GIFT_COOLDOWN
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(STORE_PATH), "backups");
 const MAX_BACKUPS = parseInt(process.env.MAX_BACKUPS || "80", 10);
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+const SUPABASE_STORE_ID = process.env.SUPABASE_STORE_ID || "bringo-main";
+const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const supabase = USE_SUPABASE
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    })
+  : null;
 
 const corsOptions = {
   origin: "*",
@@ -67,15 +77,28 @@ function normalizeStore(parsed) {
   return store;
 }
 
-function loadStore() {
+function loadLocalStoreOnly() {
   try {
     if (!fs.existsSync(STORE_PATH)) return defaultStore();
     const parsed = JSON.parse(fs.readFileSync(STORE_PATH, "utf8"));
     return normalizeStore(parsed);
   } catch (e) {
-    console.error("loadStore error", e.message);
+    console.error("loadLocalStoreOnly error", e.message);
     return defaultStore();
   }
+}
+
+let memoryStore = null;
+let storeLoaded = false;
+let storeLoadPromise = null;
+let persistQueue = Promise.resolve();
+let lastDatabaseError = null;
+let lastDatabaseLoadedAt = "";
+let lastDatabaseSavedAt = "";
+
+function loadStore() {
+  if (memoryStore) return normalizeStore(memoryStore);
+  return loadLocalStoreOnly();
 }
 
 function safeBackupReason(reason) {
@@ -126,15 +149,132 @@ function createStoreBackup(reason = "save") {
   }
 }
 
+async function ensureStoreLoaded() {
+  if (storeLoaded) return memoryStore;
+  if (storeLoadPromise) return storeLoadPromise;
+
+  storeLoadPromise = (async () => {
+    if (!USE_SUPABASE) {
+      memoryStore = loadLocalStoreOnly();
+      storeLoaded = true;
+      lastDatabaseError = null;
+      lastDatabaseLoadedAt = new Date().toISOString();
+      return memoryStore;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("bringo_app_store")
+        .select("data")
+        .eq("store_key", SUPABASE_STORE_ID)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data && data.data) {
+        memoryStore = normalizeStore(data.data);
+      } else {
+        memoryStore = loadLocalStoreOnly();
+        const normalized = normalizeStore(memoryStore);
+        const { error: upsertError } = await supabase
+          .from("bringo_app_store")
+          .upsert({
+            store_key: SUPABASE_STORE_ID,
+            data: normalized,
+            updated_at: new Date().toISOString()
+          }, { onConflict: "store_key" });
+        if (upsertError) throw upsertError;
+        memoryStore = normalized;
+      }
+
+      fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+      fs.writeFileSync(STORE_PATH, JSON.stringify(memoryStore, null, 2), "utf8");
+
+      storeLoaded = true;
+      lastDatabaseError = null;
+      lastDatabaseLoadedAt = new Date().toISOString();
+      return memoryStore;
+    } catch (e) {
+      lastDatabaseError = e.message || String(e);
+      console.error("Supabase load error:", lastDatabaseError);
+      memoryStore = loadLocalStoreOnly();
+      storeLoaded = true;
+      lastDatabaseLoadedAt = new Date().toISOString();
+      return memoryStore;
+    }
+  })();
+
+  return storeLoadPromise;
+}
+
+async function persistStoreToSupabase(normalized, previousStore, reason) {
+  if (!USE_SUPABASE) return;
+
+  const now = new Date().toISOString();
+
+  if (previousStore) {
+    const { error: backupError } = await supabase
+      .from("bringo_app_backups")
+      .insert({
+        store_key: SUPABASE_STORE_ID,
+        reason: safeBackupReason(reason),
+        data: normalizeStore(previousStore),
+        created_at: now
+      });
+    if (backupError) console.error("Supabase backup insert error:", backupError.message || backupError);
+  }
+
+  const { error } = await supabase
+    .from("bringo_app_store")
+    .upsert({
+      store_key: SUPABASE_STORE_ID,
+      data: normalized,
+      updated_at: now
+    }, { onConflict: "store_key" });
+
+  if (error) throw error;
+
+  lastDatabaseError = null;
+  lastDatabaseSavedAt = now;
+}
+
 function saveStore(store, reason = "save") {
-  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-  createStoreBackup(reason);
+  const previousStore = memoryStore ? normalizeStore(memoryStore) : loadLocalStoreOnly();
   const normalized = normalizeStore(store);
+
   if (Array.isArray(normalized.processedMessageIds) && normalized.processedMessageIds.length > 300) {
     normalized.processedMessageIds = normalized.processedMessageIds.slice(-300);
   }
-  fs.writeFileSync(STORE_PATH, JSON.stringify(normalized, null, 2), "utf8");
+
+  memoryStore = normalized;
+  storeLoaded = true;
+
+  try {
+    fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+    createStoreBackup(reason);
+    fs.writeFileSync(STORE_PATH, JSON.stringify(normalized, null, 2), "utf8");
+  } catch (e) {
+    console.error("local saveStore error", e.message);
+  }
+
+  if (USE_SUPABASE) {
+    persistQueue = persistQueue
+      .then(() => persistStoreToSupabase(normalized, previousStore, reason))
+      .catch(err => {
+        lastDatabaseError = err.message || String(err);
+        console.error("Supabase persist error:", lastDatabaseError);
+      });
+  }
 }
+
+app.use(async (req, res, next) => {
+  try {
+    await ensureStoreLoaded();
+    next();
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Nu pot încărca baza de date.", detail: e.message || String(e) });
+  }
+});
 
 function requireConfig() {
   const missing = [];
@@ -603,7 +743,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v15-backup-protection",
+    version: "v16-supabase-database",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -611,6 +751,11 @@ app.get("/", (req, res) => {
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     employeesInCooldown: (store.employees || []).filter(emp => getTemporaryBlock(emp).active).length,
+    storage: USE_SUPABASE ? "supabase" : "local_file",
+    databaseConfigured: USE_SUPABASE,
+    databaseLoadedAt: lastDatabaseLoadedAt,
+    databaseSavedAt: lastDatabaseSavedAt,
+    databaseError: lastDatabaseError,
     backups: listBackupFiles().length,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
@@ -631,6 +776,11 @@ app.get("/health", (req, res) => {
     wabaId: WABA_ID,
     employeeGiftCaption: EMPLOYEE_GIFT_CAPTION,
     defaultGiftCooldownMinutes: DEFAULT_GIFT_COOLDOWN_MINUTES,
+    storage: USE_SUPABASE ? "supabase" : "local_file",
+    databaseConfigured: USE_SUPABASE,
+    databaseLoadedAt: lastDatabaseLoadedAt,
+    databaseSavedAt: lastDatabaseSavedAt,
+    databaseError: lastDatabaseError,
     cardsAvailable: remainingAvailableCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
@@ -640,8 +790,96 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.get("/backups", checkApiKey, (req, res) => {
+app.get("/db-status", checkApiKey, async (req, res) => {
   try {
+    await ensureStoreLoaded();
+    let backupCount = listBackupFiles().length;
+    let storeRow = null;
+
+    if (USE_SUPABASE) {
+      const { count, error: countError } = await supabase
+        .from("bringo_app_backups")
+        .select("id", { count: "exact", head: true })
+        .eq("store_key", SUPABASE_STORE_ID);
+      if (!countError && typeof count === "number") backupCount = count;
+
+      const { data, error } = await supabase
+        .from("bringo_app_store")
+        .select("store_key, updated_at")
+        .eq("store_key", SUPABASE_STORE_ID)
+        .maybeSingle();
+      if (!error) storeRow = data || null;
+    }
+
+    const store = loadStore();
+    res.json({
+      ok: true,
+      storage: USE_SUPABASE ? "supabase" : "local_file",
+      supabaseConfigured: USE_SUPABASE,
+      storeKey: SUPABASE_STORE_ID,
+      storeRow,
+      databaseLoadedAt: lastDatabaseLoadedAt,
+      databaseSavedAt: lastDatabaseSavedAt,
+      databaseError: lastDatabaseError,
+      cardsTotal: store.cards.length,
+      employees: store.employees.length,
+      backups: backupCount
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Eroare db-status" });
+  }
+});
+
+app.post("/reload-db", checkApiKey, async (req, res) => {
+  try {
+    storeLoaded = false;
+    storeLoadPromise = null;
+    memoryStore = null;
+    await ensureStoreLoaded();
+    const store = loadStore();
+    res.json({
+      ok: true,
+      reloaded: true,
+      storage: USE_SUPABASE ? "supabase" : "local_file",
+      cardsAvailable: remainingAvailableCount(store),
+      cardsSent: sentCount(store),
+      cardsTotal: store.cards.length,
+      employees: store.employees.length
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Eroare reload-db" });
+  }
+});
+
+app.get("/backups", checkApiKey, async (req, res) => {
+  try {
+    if (USE_SUPABASE) {
+      const limit = Math.min(parseInt(req.query.limit || "50", 10) || 50, 200);
+      const { data, error } = await supabase
+        .from("bringo_app_backups")
+        .select("id, reason, created_at, data")
+        .eq("store_key", SUPABASE_STORE_ID)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (error) throw error;
+
+      const backups = (data || []).map(row => {
+        const backupStore = normalizeStore(row.data || {});
+        return {
+          id: row.id,
+          reason: row.reason || "",
+          createdAt: row.created_at,
+          cardsTotal: backupStore.cards.length,
+          employees: backupStore.employees.length,
+          cardsSent: sentCount(backupStore),
+          cardsAvailable: remainingAvailableCount(backupStore)
+        };
+      });
+
+      return res.json({ ok: true, storage: "supabase", backups });
+    }
+
     const files = listBackupFiles().map(file => {
       let summary = { cardsTotal: null, employees: null, cardsSent: null, cardsAvailable: null };
       try {
@@ -660,32 +898,54 @@ app.get("/backups", checkApiKey, (req, res) => {
         ...summary
       };
     });
-    res.json({ ok: true, backups: files });
+    res.json({ ok: true, storage: "local_file", backups: files });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || "Eroare listare backup" });
   }
 });
 
-app.post("/restore-backup", checkApiKey, (req, res) => {
+app.post("/restore-backup", checkApiKey, async (req, res) => {
   try {
-    const file = path.basename(String(req.body.file || req.query.file || ""));
-    if (!file || !file.endsWith(".json")) {
-      return res.status(400).json({ ok: false, error: "Specifică fișierul backup din /backups." });
+    let backupStore;
+    let restored;
+
+    if (USE_SUPABASE) {
+      const id = req.body.id || req.query.id;
+      if (!id) return res.status(400).json({ ok: false, error: "Specifică id-ul backup-ului din /backups." });
+
+      const { data, error } = await supabase
+        .from("bringo_app_backups")
+        .select("id, data, created_at")
+        .eq("store_key", SUPABASE_STORE_ID)
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) return res.status(404).json({ ok: false, error: "Backup-ul nu există." });
+
+      backupStore = normalizeStore(data.data || {});
+      restored = String(data.id);
+    } else {
+      const file = path.basename(String(req.body.file || req.query.file || ""));
+      if (!file || !file.endsWith(".json")) {
+        return res.status(400).json({ ok: false, error: "Specifică fișierul backup din /backups." });
+      }
+
+      const backupPath = path.join(BACKUP_DIR, file);
+      if (!fs.existsSync(backupPath)) {
+        return res.status(404).json({ ok: false, error: "Backup-ul nu există." });
+      }
+
+      backupStore = normalizeStore(JSON.parse(fs.readFileSync(backupPath, "utf8")));
+      restored = file;
     }
 
-    const backupPath = path.join(BACKUP_DIR, file);
-    if (!fs.existsSync(backupPath)) {
-      return res.status(404).json({ ok: false, error: "Backup-ul nu există." });
-    }
-
-    const backupStore = normalizeStore(JSON.parse(fs.readFileSync(backupPath, "utf8")));
-    createStoreBackup("before_restore");
-    fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-    fs.writeFileSync(STORE_PATH, JSON.stringify(backupStore, null, 2), "utf8");
+    saveStore(backupStore, "before_restore");
 
     res.json({
       ok: true,
-      restored: file,
+      restored,
+      storage: USE_SUPABASE ? "supabase" : "local_file",
       cardsAvailable: remainingAvailableCount(backupStore),
       cardsSent: sentCount(backupStore),
       cardsTotal: backupStore.cards.length,
@@ -721,6 +981,11 @@ app.get("/state", checkApiKey, (req, res) => {
     cards: publicCards(store.cards),
     employeeList: publicEmployees(store.employees),
     sentLog: store.sentLog || [],
+    storage: USE_SUPABASE ? "supabase" : "local_file",
+    databaseConfigured: USE_SUPABASE,
+    databaseLoadedAt: lastDatabaseLoadedAt,
+    databaseSavedAt: lastDatabaseSavedAt,
+    databaseError: lastDatabaseError,
     backups: listBackupFiles().length
   });
 });
@@ -1336,5 +1601,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v15 backup protection running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v16 Supabase database running on port ${PORT}`);
 });
