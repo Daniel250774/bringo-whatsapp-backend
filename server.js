@@ -542,7 +542,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v13-backend-carduri-autoritar",
+    version: "v14-employee-direct-sync",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -780,6 +780,107 @@ app.post("/subscribe-waba", checkApiKey, async (req, res) => {
       meta,
       wabaId: WABA_ID
     });
+  }
+});
+
+function normalizeEmployeeForStore(emp, previous = {}, index = 0) {
+  const phone = normalizePhone(emp.phone);
+  return {
+    name: String(emp.name || previous.name || "").trim().toUpperCase(),
+    phone,
+    displayPhone: emp.displayPhone || previous.displayPhone || displayPhone(phone),
+    color: emp.color || previous.color || "#16a34a",
+    blocked: Boolean(emp.blocked ?? previous.blocked),
+    cooldownMinutes: parseCooldownMinutes(emp.cooldownMinutes, previous.cooldownMinutes ?? DEFAULT_GIFT_COOLDOWN_MINUTES),
+    blockedUntil: Object.prototype.hasOwnProperty.call(emp, "blockedUntil") ? String(emp.blockedUntil || "") : String(previous.blockedUntil || ""),
+    lastGiftAt: Object.prototype.hasOwnProperty.call(emp, "lastGiftAt") ? String(emp.lastGiftAt || "") : String(previous.lastGiftAt || "")
+  };
+}
+
+app.post("/upsert-employees", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const now = new Date().toISOString();
+    const incomingEmployees = Array.isArray(req.body.employees) ? req.body.employees : [];
+
+    if (!incomingEmployees.length) {
+      return res.status(400).json({ ok: false, error: "Nu ai trimis niciun livrator." });
+    }
+
+    const byPhone = new Map((store.employees || []).map(emp => [normalizePhone(emp.phone), emp]));
+    let added = 0;
+    let updated = 0;
+    let ignored = 0;
+
+    for (const raw of incomingEmployees) {
+      const phone = normalizePhone(raw.phone);
+      if (!/^40\d{9}$/.test(phone)) {
+        ignored++;
+        continue;
+      }
+
+      const previous = byPhone.get(phone) || {};
+      const employee = normalizeEmployeeForStore({ ...raw, phone }, previous);
+
+      if (!employee.name) {
+        ignored++;
+        continue;
+      }
+
+      clearExpiredCooldown(employee);
+
+      if (byPhone.has(phone)) {
+        const index = store.employees.findIndex(emp => normalizePhone(emp.phone) === phone);
+        if (index >= 0) store.employees[index] = employee;
+        updated++;
+      } else {
+        store.employees.push(employee);
+        added++;
+      }
+
+      byPhone.set(phone, employee);
+    }
+
+    store.employeesUpdatedAt = now;
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      message: "Livratorii au fost salvați în backend.",
+      added,
+      updated,
+      ignored,
+      employees: store.employees.length,
+      employeesUpdatedAt: store.employeesUpdatedAt,
+      employeeList: publicEmployees(store.employees)
+    });
+  } catch (err) {
+    console.error("upsert-employees error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare upsert-employees" });
+  }
+});
+
+app.post("/delete-employee", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const phone = normalizePhone(req.body.phone);
+    const before = store.employees.length;
+
+    store.employees = (store.employees || []).filter(emp => normalizePhone(emp.phone) !== phone);
+    store.employeesUpdatedAt = new Date().toISOString();
+
+    saveStore(store);
+
+    res.json({
+      ok: true,
+      deleted: before !== store.employees.length,
+      employees: store.employees.length,
+      employeesUpdatedAt: store.employeesUpdatedAt,
+      employeeList: publicEmployees(store.employees)
+    });
+  } catch (err) {
+    console.error("delete-employee error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare delete-employee" });
   }
 });
 
@@ -1104,5 +1205,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v13 backend carduri autoritar running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v14 employee direct sync running on port ${PORT}`);
 });

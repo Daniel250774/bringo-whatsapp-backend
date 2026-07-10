@@ -78,3 +78,8 @@ Backend v13 - backend autoritar pentru carduri:
 - /clear-cards șterge doar cardurile, păstrând livratorii;
 - /sync-state nu mai golește accidental cardurile/livratorii când primește liste goale, decât dacă se trimite explicit allowEmptyCards/allowEmptyEmployees;
 - /state returnează cardsUpdatedAt și employeesUpdatedAt pentru sincronizare între dispozitive.
+
+Backend v14 - sincronizare directă livratori:
+- adaugă POST /upsert-employees pentru adăugare/modificare/blocare/pauză livratori fără rescrierea cardurilor;
+- adaugă POST /delete-employee pentru ștergere livrator fără rescrierea cardurilor;
+- rezolvă blocarea/întârzierea când există multe carduri, pentru că livratorii nu mai trimit toate imaginile cardurilor la fiecare modificare.
