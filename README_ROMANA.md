@@ -83,3 +83,10 @@ Backend v14 - sincronizare directă livratori:
 - adaugă POST /upsert-employees pentru adăugare/modificare/blocare/pauză livratori fără rescrierea cardurilor;
 - adaugă POST /delete-employee pentru ștergere livrator fără rescrierea cardurilor;
 - rezolvă blocarea/întârzierea când există multe carduri, pentru că livratorii nu mai trimit toate imaginile cardurilor la fiecare modificare.
+
+Backend v15 - backup și protecție:
+- creează backup automat înainte de fiecare salvare a bazei;
+- GET /backups listează backup-urile disponibile;
+- POST /restore-backup restaurează un backup;
+- GET /export-store descarcă baza curentă;
+- păstrează datele necunoscute la încărcarea store-ului, inclusiv timestamps.

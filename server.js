@@ -21,6 +21,8 @@ const EMPLOYEE_GIFT_CAPTION = process.env.EMPLOYEE_GIFT_CAPTION || "Ai primit un
 const WABA_ID = process.env.WABA_ID || "2003039456993786";
 const DEFAULT_GIFT_COOLDOWN_MINUTES = parseInt(process.env.DEFAULT_GIFT_COOLDOWN_MINUTES || "60", 10);
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(STORE_PATH), "backups");
+const MAX_BACKUPS = parseInt(process.env.MAX_BACKUPS || "80", 10);
 
 const corsOptions = {
   origin: "*",
@@ -45,34 +47,93 @@ function defaultStore() {
     sentLog: [],
     processedMessageIds: [],
     lastInbound: null,
-    lastGiftRequest: null
+    lastGiftRequest: null,
+    cardsUpdatedAt: "",
+    employeesUpdatedAt: ""
   };
+}
+
+function normalizeStore(parsed) {
+  const base = defaultStore();
+  const store = { ...base, ...(parsed && typeof parsed === "object" ? parsed : {}) };
+  store.cards = Array.isArray(store.cards) ? store.cards : [];
+  store.employees = Array.isArray(store.employees) ? store.employees : [];
+  store.sentLog = Array.isArray(store.sentLog) ? store.sentLog : [];
+  store.processedMessageIds = Array.isArray(store.processedMessageIds) ? store.processedMessageIds : [];
+  store.lastInbound = store.lastInbound || null;
+  store.lastGiftRequest = store.lastGiftRequest || null;
+  store.cardsUpdatedAt = store.cardsUpdatedAt || "";
+  store.employeesUpdatedAt = store.employeesUpdatedAt || "";
+  return store;
 }
 
 function loadStore() {
   try {
     if (!fs.existsSync(STORE_PATH)) return defaultStore();
     const parsed = JSON.parse(fs.readFileSync(STORE_PATH, "utf8"));
-    return {
-      cards: Array.isArray(parsed.cards) ? parsed.cards : [],
-      employees: Array.isArray(parsed.employees) ? parsed.employees : [],
-      sentLog: Array.isArray(parsed.sentLog) ? parsed.sentLog : [],
-      processedMessageIds: Array.isArray(parsed.processedMessageIds) ? parsed.processedMessageIds : [],
-      lastInbound: parsed.lastInbound || null,
-      lastGiftRequest: parsed.lastGiftRequest || null
-    };
+    return normalizeStore(parsed);
   } catch (e) {
     console.error("loadStore error", e.message);
     return defaultStore();
   }
 }
 
-function saveStore(store) {
-  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-  if (Array.isArray(store.processedMessageIds) && store.processedMessageIds.length > 300) {
-    store.processedMessageIds = store.processedMessageIds.slice(-300);
+function safeBackupReason(reason) {
+  return String(reason || "save").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 50) || "save";
+}
+
+function backupFilename(reason) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${stamp}__${safeBackupReason(reason)}.json`;
+}
+
+function listBackupFiles() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return [];
+    return fs.readdirSync(BACKUP_DIR)
+      .filter(name => name.endsWith(".json"))
+      .map(name => {
+        const fullPath = path.join(BACKUP_DIR, name);
+        const stat = fs.statSync(fullPath);
+        return { name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch (e) {
+    console.error("listBackupFiles error", e.message);
+    return [];
   }
-  fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf8");
+}
+
+function cleanupOldBackups() {
+  const max = Number.isFinite(MAX_BACKUPS) && MAX_BACKUPS > 0 ? MAX_BACKUPS : 80;
+  const files = listBackupFiles();
+  for (const file of files.slice(max)) {
+    try { fs.unlinkSync(file.fullPath); } catch (e) { console.error("backup cleanup error", e.message); }
+  }
+}
+
+function createStoreBackup(reason = "save") {
+  try {
+    if (!fs.existsSync(STORE_PATH)) return null;
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const target = path.join(BACKUP_DIR, backupFilename(reason));
+    fs.copyFileSync(STORE_PATH, target);
+    cleanupOldBackups();
+    return target;
+  } catch (e) {
+    console.error("createStoreBackup error", e.message);
+    return null;
+  }
+}
+
+function saveStore(store, reason = "save") {
+  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+  createStoreBackup(reason);
+  const normalized = normalizeStore(store);
+  if (Array.isArray(normalized.processedMessageIds) && normalized.processedMessageIds.length > 300) {
+    normalized.processedMessageIds = normalized.processedMessageIds.slice(-300);
+  }
+  fs.writeFileSync(STORE_PATH, JSON.stringify(normalized, null, 2), "utf8");
 }
 
 function requireConfig() {
@@ -422,7 +483,7 @@ function recordInboundMessage(from, text, type, messageId) {
     type: type || "",
     messageId: messageId || ""
   };
-  saveStore(store);
+  saveStore(store, "store_update");
 }
 
 async function handleGiftRequest(from, messageId) {
@@ -434,7 +495,7 @@ async function handleGiftRequest(from, messageId) {
       from: normalizePhone(from),
       result: "duplicate"
     };
-    saveStore(store);
+    saveStore(store, "store_update");
     return { ok: true, duplicate: true };
   }
 
@@ -447,7 +508,7 @@ async function handleGiftRequest(from, messageId) {
       result: "employee_not_found"
     };
     if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store);
+    saveStore(store, "store_update");
     return { ok: false, reason: "employee_not_found" };
   }
 
@@ -460,7 +521,7 @@ async function handleGiftRequest(from, messageId) {
       result: "employee_blocked"
     };
     if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store);
+    saveStore(store, "store_update");
     return { ok: false, reason: "employee_blocked" };
   }
 
@@ -477,7 +538,7 @@ async function handleGiftRequest(from, messageId) {
       minutesLeft: temporaryBlock.minutesLeft
     };
     if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store);
+    saveStore(store, "store_update");
     return { ok: false, reason: "employee_cooldown", blockedUntil: temporaryBlock.untilIso };
   }
 
@@ -499,7 +560,7 @@ async function handleGiftRequest(from, messageId) {
       result: "no_cards"
     };
     if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store);
+    saveStore(store, "store_update");
     return { ok: false, reason: "no_cards" };
   }
 
@@ -532,7 +593,7 @@ async function handleGiftRequest(from, messageId) {
   };
 
   if (messageId) store.processedMessageIds.push(messageId);
-  saveStore(store);
+  saveStore(store, "store_update");
 
   return { ok: true, employee: employee.name, card: card.fileBase, remainingAfter };
 }
@@ -542,7 +603,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v14-employee-direct-sync",
+    version: "v15-backup-protection",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -550,6 +611,7 @@ app.get("/", (req, res) => {
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     employeesInCooldown: (store.employees || []).filter(emp => getTemporaryBlock(emp).active).length,
+    backups: listBackupFiles().length,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
   });
@@ -578,6 +640,74 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.get("/backups", checkApiKey, (req, res) => {
+  try {
+    const files = listBackupFiles().map(file => {
+      let summary = { cardsTotal: null, employees: null, cardsSent: null, cardsAvailable: null };
+      try {
+        const backupStore = normalizeStore(JSON.parse(fs.readFileSync(file.fullPath, "utf8")));
+        summary = {
+          cardsTotal: backupStore.cards.length,
+          employees: backupStore.employees.length,
+          cardsSent: sentCount(backupStore),
+          cardsAvailable: remainingAvailableCount(backupStore)
+        };
+      } catch (e) {}
+      return {
+        file: file.name,
+        createdAt: new Date(file.mtimeMs).toISOString(),
+        sizeBytes: file.sizeBytes,
+        ...summary
+      };
+    });
+    res.json({ ok: true, backups: files });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Eroare listare backup" });
+  }
+});
+
+app.post("/restore-backup", checkApiKey, (req, res) => {
+  try {
+    const file = path.basename(String(req.body.file || req.query.file || ""));
+    if (!file || !file.endsWith(".json")) {
+      return res.status(400).json({ ok: false, error: "Specifică fișierul backup din /backups." });
+    }
+
+    const backupPath = path.join(BACKUP_DIR, file);
+    if (!fs.existsSync(backupPath)) {
+      return res.status(404).json({ ok: false, error: "Backup-ul nu există." });
+    }
+
+    const backupStore = normalizeStore(JSON.parse(fs.readFileSync(backupPath, "utf8")));
+    createStoreBackup("before_restore");
+    fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+    fs.writeFileSync(STORE_PATH, JSON.stringify(backupStore, null, 2), "utf8");
+
+    res.json({
+      ok: true,
+      restored: file,
+      cardsAvailable: remainingAvailableCount(backupStore),
+      cardsSent: sentCount(backupStore),
+      cardsTotal: backupStore.cards.length,
+      employees: backupStore.employees.length
+    });
+  } catch (err) {
+    console.error("restore-backup error", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare restore-backup" });
+  }
+});
+
+app.get("/export-store", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=bringo_store_export.json");
+    res.send(JSON.stringify(store, null, 2));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Eroare export-store" });
+  }
+});
+
 app.get("/state", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
@@ -590,7 +720,8 @@ app.get("/state", checkApiKey, (req, res) => {
     employeesUpdatedAt: store.employeesUpdatedAt || "",
     cards: publicCards(store.cards),
     employeeList: publicEmployees(store.employees),
-    sentLog: store.sentLog || []
+    sentLog: store.sentLog || [],
+    backups: listBackupFiles().length
   });
 });
 
@@ -700,7 +831,7 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
       store.adminPhone = normalizePhone(req.body.adminPhone || ADMIN_COPY_PHONE);
     }
 
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -842,7 +973,7 @@ app.post("/upsert-employees", checkApiKey, (req, res) => {
     }
 
     store.employeesUpdatedAt = now;
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -869,7 +1000,7 @@ app.post("/delete-employee", checkApiKey, (req, res) => {
     store.employees = (store.employees || []).filter(emp => normalizePhone(emp.phone) !== phone);
     store.employeesUpdatedAt = new Date().toISOString();
 
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -891,7 +1022,7 @@ app.post("/clear-cards", checkApiKey, (req, res) => {
     store.sentLog = [];
     store.lastGiftRequest = null;
     store.cardsUpdatedAt = new Date().toISOString();
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -974,7 +1105,7 @@ app.post("/upsert-cards", checkApiKey, (req, res) => {
     }
 
     store.cardsUpdatedAt = now;
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -998,7 +1129,7 @@ app.post("/reset-state", checkApiKey, (req, res) => {
   const store = defaultStore();
   store.employees = previous.employees || [];
   store.adminPhone = previous.adminPhone || normalizePhone(ADMIN_COPY_PHONE);
-  saveStore(store);
+  saveStore(store, "store_update");
   res.json({
     ok: true,
     reset: true,
@@ -1038,7 +1169,7 @@ app.post("/update-card-value", checkApiKey, (req, res) => {
       });
     }
 
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -1068,7 +1199,7 @@ app.post("/mark-card-sent", checkApiKey, (req, res) => {
     };
 
     if ((card.status || "available") === "sent") {
-      saveStore(store);
+      saveStore(store, "store_update");
       return res.json({
         ok: true,
         alreadySent: true,
@@ -1089,7 +1220,7 @@ app.post("/mark-card-sent", checkApiKey, (req, res) => {
       employeeCooldownMinutes = getCooldownMinutes(storeEmployee);
     }
 
-    saveStore(store);
+    saveStore(store, "store_update");
 
     res.json({
       ok: true,
@@ -1205,5 +1336,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v14 employee direct sync running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v15 backup protection running on port ${PORT}`);
 });
