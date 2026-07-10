@@ -542,7 +542,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v12-card-sync-preserve-employees",
+    version: "v13-backend-carduri-autoritar",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -586,6 +586,8 @@ app.get("/state", checkApiKey, (req, res) => {
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
+    cardsUpdatedAt: store.cardsUpdatedAt || "",
+    employeesUpdatedAt: store.employeesUpdatedAt || "",
     cards: publicCards(store.cards),
     employeeList: publicEmployees(store.employees),
     sentLog: store.sentLog || []
@@ -596,84 +598,108 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
   try {
     const replaceMode = Boolean(req.body.replaceMode);
     const previousStore = loadStore();
-    const store = replaceMode ? defaultStore() : previousStore;
+    const store = replaceMode
+      ? { ...defaultStore(), employees: previousStore.employees || [], cards: previousStore.cards || [], sentLog: previousStore.sentLog || [] }
+      : previousStore;
+
     const now = new Date().toISOString();
 
-    const previousEmployeesByPhone = new Map(
-      (previousStore.employees || []).map(emp => [normalizePhone(emp.phone), emp])
-    );
+    const incomingEmployeesProvided = Array.isArray(req.body.employees);
+    const incomingCardsProvided = Array.isArray(req.body.cards);
+    const allowEmptyEmployees = Boolean(req.body.allowEmptyEmployees);
+    const allowEmptyCards = Boolean(req.body.allowEmptyCards);
 
-    const incomingEmployees = Array.isArray(req.body.employees) ? req.body.employees : [];
-    store.employees = incomingEmployees
-      .map(emp => {
-        const phone = normalizePhone(emp.phone);
-        const previous = previousEmployeesByPhone.get(phone) || {};
-        const hasBlockedUntil = Object.prototype.hasOwnProperty.call(emp, "blockedUntil");
-        const hasLastGiftAt = Object.prototype.hasOwnProperty.call(emp, "lastGiftAt");
+    if (incomingEmployeesProvided) {
+      const incomingEmployees = req.body.employees || [];
+      const previousEmployeesByPhone = new Map(
+        (previousStore.employees || []).map(emp => [normalizePhone(emp.phone), emp])
+      );
 
-        return {
-          name: String(emp.name || "").trim().toUpperCase(),
-          phone,
-          displayPhone: emp.displayPhone || displayPhone(phone),
-          color: emp.color || "#16a34a",
-          blocked: Boolean(emp.blocked),
-          cooldownMinutes: parseCooldownMinutes(emp.cooldownMinutes, previous.cooldownMinutes ?? DEFAULT_GIFT_COOLDOWN_MINUTES),
-          blockedUntil: hasBlockedUntil ? String(emp.blockedUntil || "") : String(previous.blockedUntil || ""),
-          lastGiftAt: hasLastGiftAt ? String(emp.lastGiftAt || "") : String(previous.lastGiftAt || "")
-        };
-      })
-      .filter(emp => emp.name && /^40\d{9}$/.test(emp.phone));
+      if (incomingEmployees.length || allowEmptyEmployees) {
+        store.employees = incomingEmployees
+          .map(emp => {
+            const phone = normalizePhone(emp.phone);
+            const previous = previousEmployeesByPhone.get(phone) || {};
+            const hasBlockedUntil = Object.prototype.hasOwnProperty.call(emp, "blockedUntil");
+            const hasLastGiftAt = Object.prototype.hasOwnProperty.call(emp, "lastGiftAt");
 
-    store.employees.forEach(clearExpiredCooldown);
+            return {
+              name: String(emp.name || "").trim().toUpperCase(),
+              phone,
+              displayPhone: emp.displayPhone || displayPhone(phone),
+              color: emp.color || "#16a34a",
+              blocked: Boolean(emp.blocked),
+              cooldownMinutes: parseCooldownMinutes(emp.cooldownMinutes, previous.cooldownMinutes ?? DEFAULT_GIFT_COOLDOWN_MINUTES),
+              blockedUntil: hasBlockedUntil ? String(emp.blockedUntil || "") : String(previous.blockedUntil || ""),
+              lastGiftAt: hasLastGiftAt ? String(emp.lastGiftAt || "") : String(previous.lastGiftAt || "")
+            };
+          })
+          .filter(emp => emp.name && /^40\d{9}$/.test(emp.phone));
 
-    const incomingCards = Array.isArray(req.body.cards) ? req.body.cards : [];
-    const existingByCode = new Map((store.cards || []).filter(c => c.code).map(c => [String(c.code), c]));
-    const nextCards = [];
-
-    for (const raw of incomingCards) {
-      const code = String(raw.code || "").trim();
-      if (!code) continue;
-
-      const existing = existingByCode.get(code);
-      const incomingStatus = raw.status === "sent" ? "sent" : "available";
-
-      const base = {
-        id: String(raw.id || code),
-        code,
-        last4: String(raw.last4 || code.slice(-4)),
-        value: String(raw.value || ""),
-        fileBase: String(raw.fileBase || code.slice(-4)),
-        imageDataUrl: raw.imageDataUrl || existing?.imageDataUrl || "",
-        syncedAt: now
-      };
-
-      if (existing && existing.status === "sent") {
-        nextCards.push({
-          ...existing,
-          ...base,
-          status: "sent",
-          imageDataUrl: existing.imageDataUrl || base.imageDataUrl
-        });
-      } else {
-        nextCards.push({
-          ...base,
-          status: incomingStatus,
-          sentAt: raw.sentAt || "",
-          sentTo: raw.sentTo || "",
-          sentPhone: raw.sentPhone || "",
-          sentSource: raw.sentSource || (incomingStatus === "sent" ? "manual_html" : "")
-        });
+        store.employees.forEach(clearExpiredCooldown);
+        store.employeesUpdatedAt = now;
       }
     }
 
-    const nextCodes = new Set(nextCards.map(c => String(c.code)));
-    for (const existing of store.cards || []) {
-      if (existing.status === "sent" && existing.code && !nextCodes.has(String(existing.code))) {
-        nextCards.push(existing);
+    if (incomingCardsProvided) {
+      const incomingCards = req.body.cards || [];
+
+      if (incomingCards.length || allowEmptyCards) {
+        const existingByCode = new Map((previousStore.cards || []).filter(c => c.code).map(c => [String(c.code), c]));
+        const nextCards = [];
+
+        for (const raw of incomingCards) {
+          const code = String(raw.code || "").trim();
+          if (!code) continue;
+
+          const existing = existingByCode.get(code);
+          const incomingStatus = raw.status === "sent" ? "sent" : "available";
+
+          const base = {
+            id: String(raw.id || existing?.id || code),
+            code,
+            last4: String(raw.last4 || existing?.last4 || code.slice(-4)),
+            value: String(raw.value || existing?.value || ""),
+            fileBase: String(raw.fileBase || existing?.fileBase || code.slice(-4)),
+            imageDataUrl: raw.imageDataUrl || existing?.imageDataUrl || "",
+            syncedAt: now
+          };
+
+          if (existing && existing.status === "sent" && incomingStatus !== "available") {
+            nextCards.push({
+              ...existing,
+              ...base,
+              status: "sent",
+              imageDataUrl: existing.imageDataUrl || base.imageDataUrl
+            });
+          } else {
+            nextCards.push({
+              ...base,
+              status: incomingStatus,
+              sentAt: incomingStatus === "sent" ? (raw.sentAt || existing?.sentAt || "") : "",
+              sentTo: incomingStatus === "sent" ? (raw.sentTo || existing?.sentTo || "") : "",
+              sentPhone: incomingStatus === "sent" ? (raw.sentPhone || existing?.sentPhone || "") : "",
+              sentSource: incomingStatus === "sent" ? (raw.sentSource || existing?.sentSource || "manual_html") : ""
+            });
+          }
+        }
+
+        const nextCodes = new Set(nextCards.map(c => String(c.code)));
+        for (const existing of previousStore.cards || []) {
+          if (existing.status === "sent" && existing.code && !nextCodes.has(String(existing.code))) {
+            nextCards.push(existing);
+          }
+        }
+
+        store.cards = nextCards;
+        store.cardsUpdatedAt = now;
       }
     }
 
-    store.cards = nextCards;
+    if (typeof req.body.adminPhone !== "undefined") {
+      store.adminPhone = normalizePhone(req.body.adminPhone || ADMIN_COPY_PHONE);
+    }
+
     saveStore(store);
 
     res.json({
@@ -681,7 +707,9 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
       cardsAvailable: remainingAvailableCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
-      employees: store.employees.length
+      employees: store.employees.length,
+      cardsUpdatedAt: store.cardsUpdatedAt || "",
+      employeesUpdatedAt: store.employeesUpdatedAt || ""
     });
   } catch (err) {
     console.error("sync-state error", err);
@@ -761,6 +789,7 @@ app.post("/clear-cards", checkApiKey, (req, res) => {
     store.cards = [];
     store.sentLog = [];
     store.lastGiftRequest = null;
+    store.cardsUpdatedAt = new Date().toISOString();
     saveStore(store);
 
     res.json({
@@ -769,7 +798,8 @@ app.post("/clear-cards", checkApiKey, (req, res) => {
       cardsAvailable: 0,
       cardsSent: 0,
       cardsTotal: 0,
-      employees: store.employees.length
+      employees: store.employees.length,
+      cardsUpdatedAt: store.cardsUpdatedAt || ''
     });
   } catch (err) {
     console.error("clear-cards error:", err);
@@ -842,6 +872,7 @@ app.post("/upsert-cards", checkApiKey, (req, res) => {
       }
     }
 
+    store.cardsUpdatedAt = now;
     saveStore(store);
 
     res.json({
@@ -1073,5 +1104,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v12 card sync preserve employees running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v13 backend carduri autoritar running on port ${PORT}`);
 });

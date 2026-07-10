@@ -72,3 +72,9 @@ Backend v12 - sincronizare carduri fără ștergerea livratorilor:
 - adaugă POST /upsert-cards pentru încărcarea PDF-urilor de pe telefon/laptop fără să șteargă ce există deja;
 - adaugă POST /clear-cards pentru golirea doar a cardurilor, cu păstrarea livratorilor;
 - /reset-state păstrează livratorii ca măsură de siguranță.
+
+Backend v13 - backend autoritar pentru carduri:
+- /upsert-cards este endpoint-ul principal pentru cardurile încărcate din PDF;
+- /clear-cards șterge doar cardurile, păstrând livratorii;
+- /sync-state nu mai golește accidental cardurile/livratorii când primește liste goale, decât dacă se trimite explicit allowEmptyCards/allowEmptyEmployees;
+- /state returnează cardsUpdatedAt și employeesUpdatedAt pentru sincronizare între dispozitive.
