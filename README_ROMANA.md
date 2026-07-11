@@ -118,3 +118,7 @@ Backend v18 - jurnal notificări administrator:
 - dacă trimiterea imaginii către administrator eșuează, încearcă fallback text;
 - dacă eșuează și textul, eroarea WhatsApp este salvată în lastAdminNotification și /admin-notifications;
 - adaugă GET /admin-notifications pentru verificare rapidă.
+
+Backend v19 - fix valoare cu zecimale:
+- repară afișarea valorilor de tip 1.415,27 lei în mesajele WhatsApp;
+- include în continuare jurnalul notificărilor către administrator din v18.

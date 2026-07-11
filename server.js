@@ -640,12 +640,44 @@ function markCardSent(store, card, employee, source) {
   return { sentAt, remainingAfter, sentTotal: sentCount(store) };
 }
 
+function parseGiftValueNumber(value) {
+  let raw = String(value || "").trim();
+  raw = raw.replace(/\s+/g, "").replace(/lei|ron/gi, "");
+  let s = raw.replace(/[^0-9.,-]/g, "");
+  if (!s) return 0;
+
+  const comma = s.lastIndexOf(",");
+  const dot = s.lastIndexOf(".");
+  let normalized = s;
+
+  if (comma >= 0 && dot >= 0) {
+    if (comma > dot) normalized = s.replace(/\./g, "").replace(",", ".");
+    else normalized = s.replace(/,/g, "");
+  } else if (comma >= 0) {
+    const decimals = s.length - comma - 1;
+    if (decimals > 0 && decimals <= 2) normalized = s.replace(/,/g, ".");
+    else normalized = s.replace(/,/g, "");
+  } else if (dot >= 0) {
+    const decimals = s.length - dot - 1;
+    const looksLikeThousands = /^-?\d{1,3}(\.\d{3})+$/.test(s);
+    if (looksLikeThousands || decimals === 3) normalized = s.replace(/\./g, "");
+    else if (decimals > 0 && decimals <= 2) normalized = s;
+    else normalized = s.replace(/\./g, "");
+  }
+
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function formatGiftValueForText(value) {
   const raw = String(value || "").trim();
-  const digits = raw.replace(/[^0-9]/g, "");
-  const n = parseInt(digits || "0", 10);
-  if (Number.isFinite(n) && n > 0) {
-    return n.toLocaleString("ro-RO") + " lei";
+  const n = parseGiftValueNumber(value);
+  if (n > 0) {
+    const hasDecimals = Math.abs(n - Math.round(n)) > 0.000001;
+    return n.toLocaleString("ro-RO", {
+      minimumFractionDigits: hasDecimals ? 2 : 0,
+      maximumFractionDigits: 2
+    }) + " lei";
   }
   return raw || "2.000 lei";
 }
@@ -887,7 +919,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v18-admin-notification-log",
+    version: "v19-valoare-zecimala-fix",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1781,5 +1813,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v18 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v19 Supabase database running on port ${PORT}`);
 });
