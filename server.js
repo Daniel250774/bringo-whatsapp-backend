@@ -146,6 +146,8 @@ function defaultStore() {
     processedMessageIds: [],
     lastInbound: null,
     lastGiftRequest: null,
+    lastAdminNotification: null,
+    adminNotifications: [],
     cardsUpdatedAt: "",
     employeesUpdatedAt: ""
   };
@@ -158,8 +160,10 @@ function normalizeStore(parsed) {
   store.employees = Array.isArray(store.employees) ? store.employees : [];
   store.sentLog = Array.isArray(store.sentLog) ? store.sentLog : [];
   store.processedMessageIds = Array.isArray(store.processedMessageIds) ? store.processedMessageIds : [];
+  store.adminNotifications = Array.isArray(store.adminNotifications) ? store.adminNotifications : [];
   store.lastInbound = store.lastInbound || null;
   store.lastGiftRequest = store.lastGiftRequest || null;
+  store.lastAdminNotification = store.lastAdminNotification || null;
   store.cardsUpdatedAt = store.cardsUpdatedAt || "";
   store.employeesUpdatedAt = store.employeesUpdatedAt || "";
   return store;
@@ -672,6 +676,85 @@ function buildAdminCaption(employee, card, remainingAfter) {
   );
 }
 
+function whatsappApiError(err) {
+  const data = err.response?.data;
+  if (data?.error) {
+    const e = data.error;
+    return [
+      e.message || "",
+      e.type ? "type=" + e.type : "",
+      e.code ? "code=" + e.code : "",
+      e.error_subcode ? "subcode=" + e.error_subcode : "",
+      e.error_data?.details ? "details=" + e.error_data.details : ""
+    ].filter(Boolean).join(" | ");
+  }
+  return err.message || String(err);
+}
+
+function appendAdminNotification(store, event) {
+  const normalized = {
+    at: event.at || new Date().toISOString(),
+    status: event.status || "unknown",
+    to: normalizePhone(event.to || ADMIN_COPY_PHONE),
+    employee: event.employee || "",
+    employeePhone: event.employeePhone || "",
+    card: event.card || "",
+    last4: event.last4 || "",
+    value: event.value || "",
+    remainingAfter: typeof event.remainingAfter === "number" ? event.remainingAfter : null,
+    imageMessageId: event.imageMessageId || "",
+    textMessageId: event.textMessageId || "",
+    imageError: event.imageError || "",
+    textError: event.textError || "",
+    note: event.note || ""
+  };
+
+  store.lastAdminNotification = normalized;
+  store.adminNotifications = Array.isArray(store.adminNotifications) ? store.adminNotifications : [];
+  store.adminNotifications.push(normalized);
+  if (store.adminNotifications.length > 300) {
+    store.adminNotifications = store.adminNotifications.slice(-300);
+  }
+  return normalized;
+}
+
+async function sendAdminNotification(store, employee, card, mediaId, caption, remainingAfter) {
+  const event = {
+    at: new Date().toISOString(),
+    to: normalizePhone(ADMIN_COPY_PHONE),
+    employee: employee.name,
+    employeePhone: employee.displayPhone || displayPhone(employee.phone),
+    card: card.fileBase || "",
+    last4: card.last4 || "",
+    value: formatGiftValueForText(card.value),
+    remainingAfter
+  };
+
+  try {
+    const result = await sendImageMessage(event.to, mediaId, caption);
+    event.status = "sent_image";
+    event.imageMessageId = result?.messages?.[0]?.id || "";
+    return appendAdminNotification(store, event);
+  } catch (imageErr) {
+    event.imageError = whatsappApiError(imageErr);
+    console.error("admin image notification failed:", event.imageError);
+  }
+
+  try {
+    const result = await sendTextMessage(event.to, caption);
+    event.status = "sent_text_fallback";
+    event.textMessageId = result?.messages?.[0]?.id || "";
+    event.note = "Imaginea către administrator a eșuat, dar textul a fost trimis.";
+    return appendAdminNotification(store, event);
+  } catch (textErr) {
+    event.textError = whatsappApiError(textErr);
+    event.status = "failed";
+    event.note = "Notificarea WhatsApp către administrator nu a putut fi livrată. Verifică fereastra WhatsApp 24h sau folosește template aprobat.";
+    console.error("admin text notification failed:", event.textError);
+    return appendAdminNotification(store, event);
+  }
+}
+
 function isGiftCommand(text) {
   const value = String(text || "").trim().toLowerCase();
   return value === "gift" || value === "ghift";
@@ -778,11 +861,7 @@ async function handleGiftRequest(from, messageId) {
   const blockedUntil = applyCooldownToEmployee(employee, sentAt);
 
   const adminCaption = buildAdminCaption(employee, card, remainingAfter);
-  try {
-    await sendImageMessage(normalizePhone(ADMIN_COPY_PHONE), mediaId, adminCaption);
-  } catch (e) {
-    console.error("admin copy failed:", e.response?.data || e.message);
-  }
+  const adminNotification = await sendAdminNotification(store, employee, card, mediaId, adminCaption, remainingAfter);
 
   store.lastGiftRequest = {
     at: sentAt,
@@ -792,6 +871,8 @@ async function handleGiftRequest(from, messageId) {
     remainingAfter,
     cooldownMinutes: getCooldownMinutes(employee),
     blockedUntil,
+    adminNotificationStatus: adminNotification.status,
+    adminNotificationError: adminNotification.imageError || adminNotification.textError || "",
     result: "sent"
   };
 
@@ -806,7 +887,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v17-supabase-axios-diagnostics",
+    version: "v18-admin-notification-log",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -820,6 +901,8 @@ app.get("/", (req, res) => {
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
     backups: listBackupFiles().length,
+    adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
+    lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
   });
@@ -848,6 +931,8 @@ app.get("/health", (req, res) => {
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
+    adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
+    lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
   });
@@ -1046,6 +1131,21 @@ app.get("/export-store", checkApiKey, (req, res) => {
   }
 });
 
+app.get("/admin-notifications", checkApiKey, (req, res) => {
+  const store = loadStore();
+  const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
+  const items = Array.isArray(store.adminNotifications)
+    ? store.adminNotifications.slice(-limit).reverse()
+    : [];
+
+  res.json({
+    ok: true,
+    count: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
+    lastAdminNotification: store.lastAdminNotification || null,
+    notifications: items
+  });
+});
+
 app.get("/state", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
@@ -1056,6 +1156,8 @@ app.get("/state", checkApiKey, (req, res) => {
     employees: store.employees.length,
     cardsUpdatedAt: store.cardsUpdatedAt || "",
     employeesUpdatedAt: store.employeesUpdatedAt || "",
+    lastAdminNotification: store.lastAdminNotification || null,
+    adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.slice(-100).reverse() : [],
     cards: publicCards(store.cards),
     employeeList: publicEmployees(store.employees),
     sentLog: store.sentLog || [],
@@ -1679,5 +1781,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v17 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v18 Supabase database running on port ${PORT}`);
 });

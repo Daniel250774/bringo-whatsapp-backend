@@ -112,3 +112,9 @@ Backend v17 - Supabase Axios Diagnostics:
 - folosește axios direct către REST API, cu timeout și mesaje de eroare mai clare;
 - adaugă /supabase-test pentru verificare rapidă a conexiunii Supabase;
 - util când apare eroarea Node/undici: TypeError: fetch failed.
+
+Backend v18 - jurnal notificări administrator:
+- salvează în Supabase statusul fiecărei notificări trimise către administrator;
+- dacă trimiterea imaginii către administrator eșuează, încearcă fallback text;
+- dacă eșuează și textul, eroarea WhatsApp este salvată în lastAdminNotification și /admin-notifications;
+- adaugă GET /admin-notifications pentru verificare rapidă.
