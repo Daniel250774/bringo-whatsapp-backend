@@ -122,3 +122,17 @@ Backend v18 - jurnal notificări administrator:
 Backend v19 - fix valoare cu zecimale:
 - repară afișarea valorilor de tip 1.415,27 lei în mesajele WhatsApp;
 - include în continuare jurnalul notificărilor către administrator din v18.
+
+Backend v20:
+- adaugă endpoint POST /delete-card pentru ștergerea directă a cardurilor disponibile sau deja folosite;
+- adaugă fallback opțional cu template WhatsApp pentru notificarea administratorului;
+- variabile opționale Render:
+  ADMIN_TEMPLATE_NAME=numele_template_ului_aprobat
+  ADMIN_TEMPLATE_LANGUAGE=ro
+  ADMIN_TEMPLATE_ALWAYS=true  (opțional, dacă vrei ca notificarea către administrator să fie mereu template)
+Template recomandat, categoria Utility, body:
+Gift trimis către {{1}}
+Telefon livrator: {{2}}
+Card: {{3}}
+Valoare: {{4}}
+Gifturi rămase: {{5}}

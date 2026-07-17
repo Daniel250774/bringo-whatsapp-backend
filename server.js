@@ -14,6 +14,9 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
+const ADMIN_TEMPLATE_NAME = process.env.ADMIN_TEMPLATE_NAME || "";
+const ADMIN_TEMPLATE_LANGUAGE = process.env.ADMIN_TEMPLATE_LANGUAGE || "ro";
+const ADMIN_TEMPLATE_ALWAYS = String(process.env.ADMIN_TEMPLATE_ALWAYS || "").toLowerCase() === "true";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
@@ -459,6 +462,44 @@ async function sendTextMessage(to, text) {
   return response.data;
 }
 
+async function sendAdminTemplateMessage(to, event) {
+  if (!ADMIN_TEMPLATE_NAME) {
+    throw new Error("ADMIN_TEMPLATE_NAME nu este configurat în Render.");
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: ADMIN_TEMPLATE_NAME,
+      language: { code: ADMIN_TEMPLATE_LANGUAGE },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: String(event.employee || "-") },
+            { type: "text", text: String(event.employeePhone || "-") },
+            { type: "text", text: String(event.last4 || event.card || "-") },
+            { type: "text", text: String(event.value || "-") },
+            { type: "text", text: String(event.remainingAfter ?? "-") }
+          ]
+        }
+      ]
+    }
+  };
+
+  const response = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    }
+  });
+
+  return response.data;
+}
+
 async function sendTemplateWithImage(to, mediaId) {
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
   const payload = {
@@ -736,8 +777,10 @@ function appendAdminNotification(store, event) {
     remainingAfter: typeof event.remainingAfter === "number" ? event.remainingAfter : null,
     imageMessageId: event.imageMessageId || "",
     textMessageId: event.textMessageId || "",
+    templateMessageId: event.templateMessageId || "",
     imageError: event.imageError || "",
     textError: event.textError || "",
+    templateError: event.templateError || "",
     note: event.note || ""
   };
 
@@ -762,6 +805,19 @@ async function sendAdminNotification(store, employee, card, mediaId, caption, re
     remainingAfter
   };
 
+  if (ADMIN_TEMPLATE_ALWAYS && ADMIN_TEMPLATE_NAME) {
+    try {
+      const result = await sendAdminTemplateMessage(event.to, event);
+      event.status = "sent_template";
+      event.templateMessageId = result?.messages?.[0]?.id || "";
+      event.note = "Notificarea către administrator a fost trimisă prin template WhatsApp.";
+      return appendAdminNotification(store, event);
+    } catch (templateErr) {
+      event.templateError = whatsappApiError(templateErr);
+      console.error("admin template notification failed:", event.templateError);
+    }
+  }
+
   try {
     const result = await sendImageMessage(event.to, mediaId, caption);
     event.status = "sent_image";
@@ -780,11 +836,27 @@ async function sendAdminNotification(store, employee, card, mediaId, caption, re
     return appendAdminNotification(store, event);
   } catch (textErr) {
     event.textError = whatsappApiError(textErr);
-    event.status = "failed";
-    event.note = "Notificarea WhatsApp către administrator nu a putut fi livrată. Verifică fereastra WhatsApp 24h sau folosește template aprobat.";
     console.error("admin text notification failed:", event.textError);
-    return appendAdminNotification(store, event);
   }
+
+  if (ADMIN_TEMPLATE_NAME) {
+    try {
+      const result = await sendAdminTemplateMessage(event.to, event);
+      event.status = "sent_template_fallback";
+      event.templateMessageId = result?.messages?.[0]?.id || "";
+      event.note = "Mesajul normal către administrator a eșuat, dar template-ul WhatsApp a fost trimis.";
+      return appendAdminNotification(store, event);
+    } catch (templateErr) {
+      event.templateError = whatsappApiError(templateErr);
+      console.error("admin template fallback failed:", event.templateError);
+    }
+  }
+
+  event.status = "failed";
+  event.note = ADMIN_TEMPLATE_NAME
+    ? "Notificarea către administrator nu a putut fi livrată nici ca mesaj normal, nici ca template."
+    : "Notificarea WhatsApp către administrator nu a putut fi livrată. Configurează ADMIN_TEMPLATE_NAME cu un template aprobat pentru livrare în afara ferestrei de 24h.";
+  return appendAdminNotification(store, event);
 }
 
 function isGiftCommand(text) {
@@ -919,7 +991,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v19-valoare-zecimala-fix",
+    version: "v20-delete-card-admin-template",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -933,6 +1005,8 @@ app.get("/", (req, res) => {
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
     backups: listBackupFiles().length,
+    adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
+    adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
@@ -963,6 +1037,8 @@ app.get("/health", (req, res) => {
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
+    adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
+    adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
@@ -1618,6 +1694,74 @@ app.post("/reset-state", checkApiKey, (req, res) => {
   });
 });
 
+app.post("/delete-card", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const lookupValues = [
+      req.body.code,
+      req.body.id,
+      req.body.fileBase,
+      req.body.last4
+    ].map(v => String(v || "").trim()).filter(Boolean);
+
+    if (!lookupValues.length) {
+      return res.status(400).json({ ok: false, error: "Lipsește codul/id-ul cardului." });
+    }
+
+    const before = store.cards.length;
+    const removed = [];
+
+    store.cards = (store.cards || []).filter(card => {
+      const matches = lookupValues.some(key =>
+        String(card.code || "") === key ||
+        String(card.id || "") === key ||
+        String(card.fileBase || "") === key ||
+        String(card.last4 || "") === key
+      );
+      if (matches) removed.push(card);
+      return !matches;
+    });
+
+    if (!removed.length) {
+      return res.status(404).json({
+        ok: false,
+        error: "Cardul nu există în backend sau a fost deja șters."
+      });
+    }
+
+    const removedCodes = new Set(removed.map(c => String(c.code || "")).filter(Boolean));
+    const removedIds = new Set(removed.map(c => String(c.id || "")).filter(Boolean));
+    const removedFileBases = new Set(removed.map(c => String(c.fileBase || "")).filter(Boolean));
+
+    if (Array.isArray(store.sentLog)) {
+      store.sentLog = store.sentLog.filter(item => {
+        return !(
+          removedCodes.has(String(item.code || "")) ||
+          removedIds.has(String(item.id || "")) ||
+          removedFileBases.has(String(item.fileBase || ""))
+        );
+      });
+    }
+
+    store.cardsUpdatedAt = new Date().toISOString();
+    saveStore(store, "store_update");
+
+    res.json({
+      ok: true,
+      deleted: removed.length,
+      before,
+      cardsAvailable: remainingAvailableCount(store),
+      cardsSent: sentCount(store),
+      cardsTotal: store.cards.length,
+      employees: store.employees.length,
+      cardsUpdatedAt: store.cardsUpdatedAt || ""
+    });
+  } catch (err) {
+    console.error("delete-card error:", err);
+    res.status(500).json({ ok: false, error: err.message || "Eroare delete-card" });
+  }
+});
+
 app.post("/update-card-value", checkApiKey, (req, res) => {
   try {
     const store = loadStore();
@@ -1813,5 +1957,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v19 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v20 Supabase database running on port ${PORT}`);
 });
