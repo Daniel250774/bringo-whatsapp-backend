@@ -1,6 +1,6 @@
 {
   "name": "bringo-whatsapp-backend",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "Backend Bringo WhatsApp API cu webhook Gift",
   "main": "server.js",
   "scripts": {

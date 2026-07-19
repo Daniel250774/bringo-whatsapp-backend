@@ -641,6 +641,23 @@ function remainingAvailableCount(store) {
   return (store.cards || []).filter(c => (c.status || "available") !== "sent").length;
 }
 
+function sendableAvailableCount(store) {
+  return (store.cards || []).filter(c => (c.status || "available") !== "sent" && c.imageDataUrl).length;
+}
+
+function availableMissingImageCount(store) {
+  return (store.cards || []).filter(c => (c.status || "available") !== "sent" && !c.imageDataUrl).length;
+}
+
+async function safeSendTextMessage(to, text) {
+  try {
+    const result = await sendTextMessage(to, text);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: whatsappApiError(err) };
+  }
+}
+
 function sentCount(store) {
   return (store.cards || []).filter(c => (c.status || "available") === "sent").length;
 }
@@ -878,86 +895,114 @@ function recordInboundMessage(from, text, type, messageId) {
 
 async function handleGiftRequest(from, messageId) {
   const store = loadStore();
+  const normalizedFrom = normalizePhone(from);
 
-  if (messageId && store.processedMessageIds.includes(messageId)) {
+  function finishGiftRequest(data) {
     store.lastGiftRequest = {
       at: new Date().toISOString(),
-      from: normalizePhone(from),
-      result: "duplicate"
+      from: normalizedFrom,
+      ...data
     };
+    if (messageId && !store.processedMessageIds.includes(messageId)) {
+      store.processedMessageIds.push(messageId);
+    }
     saveStore(store, "store_update");
+    return store.lastGiftRequest;
+  }
+
+  if (messageId && store.processedMessageIds.includes(messageId)) {
+    finishGiftRequest({ result: "duplicate" });
     return { ok: true, duplicate: true };
   }
 
   const employee = findEmployeeByPhone(store, from);
   if (!employee) {
-    await sendTextMessage(from, "Numărul tău nu este înregistrat pentru primirea de gifturi.");
-    store.lastGiftRequest = {
-      at: new Date().toISOString(),
-      from: normalizePhone(from),
-      result: "employee_not_found"
-    };
-    if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store, "store_update");
+    const sendResult = await safeSendTextMessage(from, "Numărul tău nu este înregistrat pentru primirea de gifturi.");
+    finishGiftRequest({
+      result: "employee_not_found",
+      employeeMessageStatus: sendResult.ok ? "sent" : "failed",
+      employeeMessageError: sendResult.error || ""
+    });
     return { ok: false, reason: "employee_not_found" };
   }
 
   if (employee.blocked) {
-    await sendTextMessage(from, "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul.");
-    store.lastGiftRequest = {
-      at: new Date().toISOString(),
-      from: normalizePhone(from),
+    const sendResult = await safeSendTextMessage(from, "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul.");
+    finishGiftRequest({
       employee: employee.name,
-      result: "employee_blocked"
-    };
-    if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store, "store_update");
+      result: "employee_blocked",
+      employeeMessageStatus: sendResult.ok ? "sent" : "failed",
+      employeeMessageError: sendResult.error || ""
+    });
     return { ok: false, reason: "employee_blocked" };
   }
 
   clearExpiredCooldown(employee);
   const temporaryBlock = getTemporaryBlock(employee);
   if (temporaryBlock.active) {
-    await sendTextMessage(from, buildCooldownMessage(employee, temporaryBlock));
-    store.lastGiftRequest = {
-      at: new Date().toISOString(),
-      from: normalizePhone(from),
+    const sendResult = await safeSendTextMessage(from, buildCooldownMessage(employee, temporaryBlock));
+    finishGiftRequest({
       employee: employee.name,
       result: "employee_cooldown",
       blockedUntil: temporaryBlock.untilIso,
-      minutesLeft: temporaryBlock.minutesLeft
-    };
-    if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store, "store_update");
+      minutesLeft: temporaryBlock.minutesLeft,
+      employeeMessageStatus: sendResult.ok ? "sent" : "failed",
+      employeeMessageError: sendResult.error || ""
+    });
     return { ok: false, reason: "employee_cooldown", blockedUntil: temporaryBlock.untilIso };
   }
 
   const card = getFirstAvailableCard(store);
   if (!card) {
-    await sendTextMessage(from, "Nu mai sunt gifturi disponibile momentan.");
-    try {
-      await sendTextMessage(
-        normalizePhone(ADMIN_COPY_PHONE),
-        "Livratorul " + employee.name + " a cerut gift, dar nu mai sunt gifturi disponibile."
-      );
-    } catch (e) {
-      console.error("admin no-stock notification failed:", e.response?.data || e.message);
-    }
-    store.lastGiftRequest = {
-      at: new Date().toISOString(),
-      from: normalizePhone(from),
+    const totalAvailable = remainingAvailableCount(store);
+    const missingImage = availableMissingImageCount(store);
+    const reason = missingImage > 0 ? "no_sendable_cards_missing_image" : "no_cards";
+    const message = missingImage > 0
+      ? "Există gift în aplicație, dar nu are imagine salvată și nu poate fi trimis automat. Te rugăm să contactezi administratorul."
+      : "Nu mai sunt gifturi disponibile momentan.";
+
+    const sendResult = await safeSendTextMessage(from, message);
+    const adminResult = await safeSendTextMessage(
+      normalizePhone(ADMIN_COPY_PHONE),
+      missingImage > 0
+        ? "Atenție: " + employee.name + " a cerut gift, dar există " + missingImage + " card disponibil fără imagine. Șterge/reimportă cardul cu v49."
+        : "Livratorul " + employee.name + " a cerut gift, dar nu mai sunt gifturi disponibile."
+    );
+
+    finishGiftRequest({
       employee: employee.name,
-      result: "no_cards"
-    };
-    if (messageId) store.processedMessageIds.push(messageId);
-    saveStore(store, "store_update");
-    return { ok: false, reason: "no_cards" };
+      result: reason,
+      cardsAvailable: totalAvailable,
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: missingImage,
+      employeeMessageStatus: sendResult.ok ? "sent" : "failed",
+      employeeMessageError: sendResult.error || "",
+      adminMessageStatus: adminResult.ok ? "sent" : "failed",
+      adminMessageError: adminResult.error || ""
+    });
+    return { ok: false, reason };
   }
 
-  const image = dataUrlToBuffer(card.imageDataUrl);
-  const mediaId = await uploadMediaBuffer(image.buffer, image.mimetype, (card.fileBase || "card") + ".jpg");
-
-  await sendImageMessage(from, mediaId, buildEmployeeGiftCaption(card));
+  let mediaId = "";
+  try {
+    const image = dataUrlToBuffer(card.imageDataUrl);
+    mediaId = await uploadMediaBuffer(image.buffer, image.mimetype, (card.fileBase || "card") + ".jpg");
+    await sendImageMessage(from, mediaId, buildEmployeeGiftCaption(card));
+  } catch (err) {
+    const errorText = whatsappApiError(err);
+    finishGiftRequest({
+      employee: employee.name,
+      card: card.fileBase,
+      result: "employee_image_send_failed",
+      employeeMessageStatus: "failed",
+      employeeMessageError: errorText,
+      cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store)
+    });
+    console.error("employee image send failed:", errorText);
+    return { ok: false, reason: "employee_image_send_failed", error: errorText };
+  }
 
   const markResult = markCardSent(store, card, employee, "whatsapp_gift_request");
   const sentAt = markResult.sentAt;
@@ -969,32 +1014,37 @@ async function handleGiftRequest(from, messageId) {
 
   store.lastGiftRequest = {
     at: sentAt,
-    from: normalizePhone(from),
+    from: normalizedFrom,
     employee: employee.name,
     card: card.fileBase,
     remainingAfter,
     cooldownMinutes: getCooldownMinutes(employee),
     blockedUntil,
     adminNotificationStatus: adminNotification.status,
-    adminNotificationError: adminNotification.imageError || adminNotification.textError || "",
+    adminNotificationError: adminNotification.imageError || adminNotification.textError || adminNotification.templateError || "",
     result: "sent"
   };
 
-  if (messageId) store.processedMessageIds.push(messageId);
+  if (messageId && !store.processedMessageIds.includes(messageId)) {
+    store.processedMessageIds.push(messageId);
+  }
   saveStore(store, "store_update");
 
   return { ok: true, employee: employee.name, card: card.fileBase, remainingAfter };
 }
+
 
 app.get("/", (req, res) => {
   const store = loadStore();
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v20-delete-card-admin-template",
+    version: "v21-send-diagnostics",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
+    cardsAvailableSendable: sendableAvailableCount(store),
+    cardsAvailableMissingImage: availableMissingImageCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
@@ -1034,6 +1084,8 @@ app.get("/health", (req, res) => {
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
     cardsAvailable: remainingAvailableCount(store),
+    cardsAvailableSendable: sendableAvailableCount(store),
+    cardsAvailableMissingImage: availableMissingImageCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
@@ -1128,6 +1180,8 @@ app.post("/reload-db", checkApiKey, async (req, res) => {
       reloaded: true,
       storage: USE_SUPABASE ? "supabase" : "local_file",
       cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       employees: store.employees.length
@@ -1259,11 +1313,15 @@ app.get("/state", checkApiKey, (req, res) => {
   res.json({
     ok: true,
     cardsAvailable: remainingAvailableCount(store),
+    cardsAvailableSendable: sendableAvailableCount(store),
+    cardsAvailableMissingImage: availableMissingImageCount(store),
     cardsSent: sentCount(store),
     cardsTotal: store.cards.length,
     employees: store.employees.length,
     cardsUpdatedAt: store.cardsUpdatedAt || "",
     employeesUpdatedAt: store.employeesUpdatedAt || "",
+    cardsAvailableSendable: sendableAvailableCount(store),
+    cardsAvailableMissingImage: availableMissingImageCount(store),
     lastAdminNotification: store.lastAdminNotification || null,
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.slice(-100).reverse() : [],
     cards: publicCards(store.cards),
@@ -1389,6 +1447,8 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
     res.json({
       ok: true,
       cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       employees: store.employees.length,
@@ -1667,6 +1727,8 @@ app.post("/upsert-cards", checkApiKey, (req, res) => {
       updated,
       ignored,
       cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       employees: store.employees.length
@@ -1751,6 +1813,8 @@ app.post("/delete-card", checkApiKey, (req, res) => {
       deleted: removed.length,
       before,
       cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       employees: store.employees.length,
@@ -1797,6 +1861,8 @@ app.post("/update-card-value", checkApiKey, (req, res) => {
       message: "Valoarea cardului a fost actualizată.",
       value: newValue,
       cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
       cardsSent: sentCount(store),
       cardsTotal: store.cards.length,
       card: publicCards([card])[0]
@@ -1957,5 +2023,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v20 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v21 Supabase database running on port ${PORT}`);
 });

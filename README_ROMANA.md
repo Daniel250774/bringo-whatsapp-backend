@@ -136,3 +136,9 @@ Telefon livrator: {{2}}
 Card: {{3}}
 Valoare: {{4}}
 Gifturi rămase: {{5}}
+
+Backend v21:
+- adaugă diagnostice: cardsAvailableSendable și cardsAvailableMissingImage;
+- salvează lastGiftRequest și când trimiterea eșuează, nu mai rămâne doar lastInbound;
+- detectează cazul în care există card disponibil dar fără imagine salvată;
+- recomandat împreună cu frontend v49.
