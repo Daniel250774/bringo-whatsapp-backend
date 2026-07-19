@@ -30,6 +30,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
 const SUPABASE_STORE_ID = process.env.SUPABASE_STORE_ID || "bringo-main";
 const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const SUPABASE_BACKUPS_ENABLED = String(process.env.SUPABASE_BACKUPS_ENABLED || "false").toLowerCase() === "true";
 
 function supabaseBaseUrl() {
   return String(SUPABASE_URL || "").replace(/\/+$/, "");
@@ -289,14 +290,35 @@ async function ensureStoreLoaded() {
   return storeLoadPromise;
 }
 
+function sanitizeStoreForSupabaseBackup(store) {
+  const normalized = normalizeStore(store);
+
+  return {
+    ...normalized,
+    // Imaginile base64 sunt foarte mari. Pentru backup păstrăm datele cardului,
+    // dar nu duplicăm imageDataUrl la fiecare tranzacție.
+    cards: (normalized.cards || []).map(card => {
+      const copy = { ...card };
+      if (copy.imageDataUrl) {
+        copy.imageDataUrl = "";
+        copy.imageDataUrlRemovedFromBackup = true;
+      }
+      return copy;
+    }),
+    sentLog: (normalized.sentLog || []).slice(-300),
+    processedMessageIds: (normalized.processedMessageIds || []).slice(-300),
+    adminNotifications: (normalized.adminNotifications || []).slice(-100)
+  };
+}
+
 async function persistStoreToSupabase(normalized, previousStore, reason) {
   if (!USE_SUPABASE) return;
 
   const now = new Date().toISOString();
 
-  if (previousStore) {
+  if (previousStore && SUPABASE_BACKUPS_ENABLED) {
     try {
-      await supabaseInsertBackup(reason, normalizeStore(previousStore));
+      await supabaseInsertBackup(reason, sanitizeStoreForSupabaseBackup(previousStore));
     } catch (backupError) {
       console.error("Supabase backup insert error:", supabaseErrorMessage(backupError));
     }
@@ -655,6 +677,25 @@ async function safeSendTextMessage(to, text) {
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: whatsappApiError(err) };
+  }
+}
+
+function estimateStoreSizeBytes(store) {
+  try {
+    return Buffer.byteLength(JSON.stringify(store || {}), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function estimateImageDataBytes(store) {
+  try {
+    return (store.cards || []).reduce((sum, card) => {
+      const img = String(card.imageDataUrl || "");
+      return sum + Buffer.byteLength(img, "utf8");
+    }, 0);
+  } catch {
+    return 0;
   }
 }
 
@@ -1039,7 +1080,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v22-preserve-logs-sync",
+    version: "v23-supabase-size-fix",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1051,6 +1092,8 @@ app.get("/", (req, res) => {
     employeesInCooldown: (store.employees || []).filter(emp => getTemporaryBlock(emp).active).length,
     storage: USE_SUPABASE ? "supabase" : "local_file",
     databaseConfigured: USE_SUPABASE,
+    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
+    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     databaseLoadedAt: lastDatabaseLoadedAt,
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
@@ -1080,6 +1123,7 @@ app.get("/health", (req, res) => {
     defaultGiftCooldownMinutes: DEFAULT_GIFT_COOLDOWN_MINUTES,
     storage: USE_SUPABASE ? "supabase" : "local_file",
     databaseConfigured: USE_SUPABASE,
+    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     databaseLoadedAt: lastDatabaseLoadedAt,
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
@@ -1293,11 +1337,28 @@ app.get("/export-store", checkApiKey, (req, res) => {
   }
 });
 
+app.get("/storage-diagnostics", checkApiKey, (req, res) => {
+  const store = loadStore();
+  const storeBytes = estimateStoreSizeBytes(store);
+  const imageBytes = estimateImageDataBytes(store);
+  res.json({
+    ok: true,
+    version: "v23-supabase-size-fix",
+    storage: USE_SUPABASE ? "supabase" : "local",
+    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
+    cardsTotal: (store.cards || []).length,
+    cardsWithImages: (store.cards || []).filter(c => c.imageDataUrl).length,
+    approxStoreMB: Math.round((storeBytes / 1024 / 1024) * 100) / 100,
+    approxImageDataMB: Math.round((imageBytes / 1024 / 1024) * 100) / 100,
+    note: "Dacă Supabase Usage arată peste limită, golește bringo_app_backups din SQL Editor și lasă SUPABASE_BACKUPS_ENABLED=false."
+  });
+});
+
 app.get("/gift-diagnostics", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
     ok: true,
-    version: "v22-preserve-logs-sync",
+    version: "v23-supabase-size-fix",
     cardsAvailable: remainingAvailableCount(store),
     cardsAvailableSendable: sendableAvailableCount(store),
     cardsAvailableMissingImage: availableMissingImageCount(store),
@@ -1348,6 +1409,7 @@ app.get("/state", checkApiKey, (req, res) => {
     sentLog: store.sentLog || [],
     storage: USE_SUPABASE ? "supabase" : "local_file",
     databaseConfigured: USE_SUPABASE,
+    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     databaseLoadedAt: lastDatabaseLoadedAt,
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
@@ -2061,5 +2123,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v22 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v23 Supabase database running on port ${PORT}`);
 });

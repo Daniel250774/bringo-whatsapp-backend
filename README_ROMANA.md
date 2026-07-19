@@ -147,3 +147,9 @@ Backend v22:
 - repară o problemă prin care sincronizarea din aplicația web putea șterge lastInbound, lastGiftRequest și adminNotifications;
 - păstrează jurnalele webhook/admin la sync-state;
 - adaugă GET /gift-diagnostics pentru verificare rapidă după un mesaj Gift.
+
+Backend v23 - Supabase size fix:
+- oprește implicit backup-urile mari în Supabase: SUPABASE_BACKUPS_ENABLED=false;
+- dacă activezi backup-urile, ele sunt salvate fără imageDataUrl, ca să nu dubleze pozele cardurilor la fiecare tranzacție;
+- adaugă GET /storage-diagnostics pentru estimare dimensiune store/imagine;
+- recomandat după ce Supabase arată EXCEEDING USAGE LIMITS la Database Size.
