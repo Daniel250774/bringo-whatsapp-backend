@@ -1039,7 +1039,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v21-send-diagnostics",
+    version: "v22-preserve-logs-sync",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1293,6 +1293,25 @@ app.get("/export-store", checkApiKey, (req, res) => {
   }
 });
 
+app.get("/gift-diagnostics", checkApiKey, (req, res) => {
+  const store = loadStore();
+  res.json({
+    ok: true,
+    version: "v22-preserve-logs-sync",
+    cardsAvailable: remainingAvailableCount(store),
+    cardsAvailableSendable: sendableAvailableCount(store),
+    cardsAvailableMissingImage: availableMissingImageCount(store),
+    cardsSent: sentCount(store),
+    cardsTotal: (store.cards || []).length,
+    employees: (store.employees || []).length,
+    employeesInCooldown: employeesInCooldownCount(store),
+    lastInbound: store.lastInbound || null,
+    lastGiftRequest: store.lastGiftRequest || null,
+    lastAdminNotification: store.lastAdminNotification || null,
+    adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.slice(-20).reverse() : []
+  });
+});
+
 app.get("/admin-notifications", checkApiKey, (req, res) => {
   const store = loadStore();
   const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
@@ -1341,7 +1360,22 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
     const replaceMode = Boolean(req.body.replaceMode);
     const previousStore = loadStore();
     const store = replaceMode
-      ? { ...defaultStore(), employees: previousStore.employees || [], cards: previousStore.cards || [], sentLog: previousStore.sentLog || [] }
+      ? {
+          ...defaultStore(),
+          // Păstrăm datele operaționale și jurnalul. Frontend-ul nu trebuie să șteargă
+          // istoricul webhook/admin printr-o sincronizare normală.
+          employees: previousStore.employees || [],
+          cards: previousStore.cards || [],
+          sentLog: previousStore.sentLog || [],
+          processedMessageIds: previousStore.processedMessageIds || [],
+          lastInbound: previousStore.lastInbound || null,
+          lastGiftRequest: previousStore.lastGiftRequest || null,
+          lastAdminNotification: previousStore.lastAdminNotification || null,
+          adminNotifications: previousStore.adminNotifications || [],
+          adminPhone: previousStore.adminPhone || ADMIN_COPY_PHONE,
+          cardsUpdatedAt: previousStore.cardsUpdatedAt || "",
+          employeesUpdatedAt: previousStore.employeesUpdatedAt || ""
+        }
       : previousStore;
 
     const now = new Date().toISOString();
@@ -1453,7 +1487,11 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
       cardsTotal: store.cards.length,
       employees: store.employees.length,
       cardsUpdatedAt: store.cardsUpdatedAt || "",
-      employeesUpdatedAt: store.employeesUpdatedAt || ""
+      employeesUpdatedAt: store.employeesUpdatedAt || "",
+      adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
+      lastAdminNotification: store.lastAdminNotification || null,
+      lastInbound: store.lastInbound || null,
+      lastGiftRequest: store.lastGiftRequest || null
     });
   } catch (err) {
     console.error("sync-state error", err);
@@ -2023,5 +2061,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v21 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v22 Supabase database running on port ${PORT}`);
 });

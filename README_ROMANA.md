@@ -142,3 +142,8 @@ Backend v21:
 - salvează lastGiftRequest și când trimiterea eșuează, nu mai rămâne doar lastInbound;
 - detectează cazul în care există card disponibil dar fără imagine salvată;
 - recomandat împreună cu frontend v49.
+
+Backend v22:
+- repară o problemă prin care sincronizarea din aplicația web putea șterge lastInbound, lastGiftRequest și adminNotifications;
+- păstrează jurnalele webhook/admin la sync-state;
+- adaugă GET /gift-diagnostics pentru verificare rapidă după un mesaj Gift.
