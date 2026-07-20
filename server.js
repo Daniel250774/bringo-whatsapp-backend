@@ -23,6 +23,7 @@ const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
 const EMPLOYEE_GIFT_CAPTION = process.env.EMPLOYEE_GIFT_CAPTION || "Ai primit un gift card în valoare de 2.000 lei.";
 const WABA_ID = process.env.WABA_ID || "2003039456993786";
 const DEFAULT_GIFT_COOLDOWN_MINUTES = parseInt(process.env.DEFAULT_GIFT_COOLDOWN_MINUTES || "60", 10);
+const MAX_INBOUND_MESSAGE_AGE_SECONDS = parseInt(process.env.MAX_INBOUND_MESSAGE_AGE_SECONDS || "900", 10);
 const STORE_PATH = process.env.STORE_PATH || path.join(__dirname, "data", "bringo_store.json");
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(STORE_PATH), "backups");
 const MAX_BACKUPS = parseInt(process.env.MAX_BACKUPS || "80", 10);
@@ -148,6 +149,8 @@ function defaultStore() {
     employees: [],
     sentLog: [],
     processedMessageIds: [],
+    inboundLog: [],
+    giftRequestLog: [],
     lastInbound: null,
     lastGiftRequest: null,
     lastAdminNotification: null,
@@ -163,8 +166,10 @@ function normalizeStore(parsed) {
   store.cards = Array.isArray(store.cards) ? store.cards : [];
   store.employees = Array.isArray(store.employees) ? store.employees : [];
   store.sentLog = Array.isArray(store.sentLog) ? store.sentLog : [];
-  store.processedMessageIds = Array.isArray(store.processedMessageIds) ? store.processedMessageIds : [];
-  store.adminNotifications = Array.isArray(store.adminNotifications) ? store.adminNotifications : [];
+  store.processedMessageIds = Array.isArray(store.processedMessageIds) ? store.processedMessageIds.slice(-500) : [];
+  store.inboundLog = Array.isArray(store.inboundLog) ? store.inboundLog.slice(-300) : [];
+  store.giftRequestLog = Array.isArray(store.giftRequestLog) ? store.giftRequestLog.slice(-300) : [];
+  store.adminNotifications = Array.isArray(store.adminNotifications) ? store.adminNotifications.slice(-300) : [];
   store.lastInbound = store.lastInbound || null;
   store.lastGiftRequest = store.lastGiftRequest || null;
   store.lastAdminNotification = store.lastAdminNotification || null;
@@ -307,6 +312,8 @@ function sanitizeStoreForSupabaseBackup(store) {
     }),
     sentLog: (normalized.sentLog || []).slice(-300),
     processedMessageIds: (normalized.processedMessageIds || []).slice(-300),
+    inboundLog: (normalized.inboundLog || []).slice(-200),
+    giftRequestLog: (normalized.giftRequestLog || []).slice(-200),
     adminNotifications: (normalized.adminNotifications || []).slice(-100)
   };
 }
@@ -922,19 +929,59 @@ function isGiftCommand(text) {
   return value === "gift" || value === "ghift";
 }
 
-function recordInboundMessage(from, text, type, messageId) {
+function buildInboundMeta(messageTimestamp) {
+  const serverReceivedAt = new Date();
+  let messageAt = null;
+  let ageSeconds = null;
+  const raw = messageTimestamp === undefined || messageTimestamp === null ? "" : String(messageTimestamp);
+
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) {
+      const ms = n < 1000000000000 ? n * 1000 : n;
+      messageAt = new Date(ms);
+      ageSeconds = Math.max(0, Math.round((serverReceivedAt.getTime() - messageAt.getTime()) / 1000));
+    }
+  }
+
+  return {
+    serverReceivedAt: serverReceivedAt.toISOString(),
+    messageTimestamp: raw,
+    messageAt: messageAt ? messageAt.toISOString() : "",
+    ageSeconds
+  };
+}
+
+function appendLogArray(store, key, item, maxItems = 300) {
+  store[key] = Array.isArray(store[key]) ? store[key] : [];
+  store[key].push(item);
+  if (store[key].length > maxItems) {
+    store[key] = store[key].slice(-maxItems);
+  }
+}
+
+function recordInboundMessage(from, text, type, messageId, inboundMeta = {}) {
   const store = loadStore();
-  store.lastInbound = {
-    at: new Date().toISOString(),
+  const item = {
+    at: inboundMeta.serverReceivedAt || new Date().toISOString(),
+    serverReceivedAt: inboundMeta.serverReceivedAt || new Date().toISOString(),
+    messageAt: inboundMeta.messageAt || "",
+    messageTimestamp: inboundMeta.messageTimestamp || "",
+    ageSeconds: inboundMeta.ageSeconds ?? null,
     from: normalizePhone(from),
     text: String(text || ""),
     type: type || "",
     messageId: messageId || ""
   };
+
+  store.lastInbound = item;
+  appendLogArray(store, "inboundLog", item, 300);
   saveStore(store, "store_update");
+  return item;
 }
 
-async function handleGiftRequest(from, messageId) {
+
+async function handleGiftRequest(from, messageId, inboundMeta = {}) {
   const store = loadStore();
   const normalizedFrom = normalizePhone(from);
 
@@ -942,13 +989,31 @@ async function handleGiftRequest(from, messageId) {
     store.lastGiftRequest = {
       at: new Date().toISOString(),
       from: normalizedFrom,
+      messageId: messageId || "",
+      messageAt: inboundMeta.messageAt || "",
+      messageTimestamp: inboundMeta.messageTimestamp || "",
+      ageSeconds: inboundMeta.ageSeconds ?? null,
       ...data
     };
+    appendLogArray(store, "giftRequestLog", store.lastGiftRequest, 300);
     if (messageId && !store.processedMessageIds.includes(messageId)) {
       store.processedMessageIds.push(messageId);
     }
     saveStore(store, "store_update");
     return store.lastGiftRequest;
+  }
+
+  if (
+    MAX_INBOUND_MESSAGE_AGE_SECONDS > 0 &&
+    Number.isFinite(Number(inboundMeta.ageSeconds)) &&
+    Number(inboundMeta.ageSeconds) > MAX_INBOUND_MESSAGE_AGE_SECONDS
+  ) {
+    finishGiftRequest({
+      result: "ignored_old_message",
+      maxAllowedAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
+      note: "Mesaj WhatsApp vechi/întârziat ignorat. Nu s-a trimis gift."
+    });
+    return { ok: false, reason: "ignored_old_message", ageSeconds: inboundMeta.ageSeconds };
   }
 
   if (messageId && store.processedMessageIds.includes(messageId)) {
@@ -1053,9 +1118,8 @@ async function handleGiftRequest(from, messageId) {
   const adminCaption = buildAdminCaption(employee, card, remainingAfter);
   const adminNotification = await sendAdminNotification(store, employee, card, mediaId, adminCaption, remainingAfter);
 
-  store.lastGiftRequest = {
+  const finalRequest = finishGiftRequest({
     at: sentAt,
-    from: normalizedFrom,
     employee: employee.name,
     card: card.fileBase,
     remainingAfter,
@@ -1064,14 +1128,9 @@ async function handleGiftRequest(from, messageId) {
     adminNotificationStatus: adminNotification.status,
     adminNotificationError: adminNotification.imageError || adminNotification.textError || adminNotification.templateError || "",
     result: "sent"
-  };
+  });
 
-  if (messageId && !store.processedMessageIds.includes(messageId)) {
-    store.processedMessageIds.push(messageId);
-  }
-  saveStore(store, "store_update");
-
-  return { ok: true, employee: employee.name, card: card.fileBase, remainingAfter };
+  return { ok: true, employee: employee.name, card: card.fileBase, remainingAfter, request: finalRequest };
 }
 
 
@@ -1080,7 +1139,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v23-supabase-size-fix",
+    version: "v24-anti-replay-audit",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1093,7 +1152,6 @@ app.get("/", (req, res) => {
     storage: USE_SUPABASE ? "supabase" : "local_file",
     databaseConfigured: USE_SUPABASE,
     supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
-    supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     databaseLoadedAt: lastDatabaseLoadedAt,
     databaseSavedAt: lastDatabaseSavedAt,
     databaseError: lastDatabaseError,
@@ -1101,6 +1159,9 @@ app.get("/", (req, res) => {
     adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
     adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
+    inboundLog: Array.isArray(store.inboundLog) ? store.inboundLog.length : 0,
+    giftRequestLog: Array.isArray(store.giftRequestLog) ? store.giftRequestLog.length : 0,
+    maxInboundMessageAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null
@@ -1343,7 +1404,7 @@ app.get("/storage-diagnostics", checkApiKey, (req, res) => {
   const imageBytes = estimateImageDataBytes(store);
   res.json({
     ok: true,
-    version: "v23-supabase-size-fix",
+    version: "v24-anti-replay-audit",
     storage: USE_SUPABASE ? "supabase" : "local",
     supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     cardsTotal: (store.cards || []).length,
@@ -1354,11 +1415,27 @@ app.get("/storage-diagnostics", checkApiKey, (req, res) => {
   });
 });
 
+app.get("/gift-audit", checkApiKey, (req, res) => {
+  const store = loadStore();
+  const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
+  res.json({
+    ok: true,
+    version: "v24-anti-replay-audit",
+    maxInboundMessageAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
+    lastInbound: store.lastInbound || null,
+    lastGiftRequest: store.lastGiftRequest || null,
+    inboundLogCount: Array.isArray(store.inboundLog) ? store.inboundLog.length : 0,
+    giftRequestLogCount: Array.isArray(store.giftRequestLog) ? store.giftRequestLog.length : 0,
+    inboundLog: Array.isArray(store.inboundLog) ? store.inboundLog.slice(-limit).reverse() : [],
+    giftRequestLog: Array.isArray(store.giftRequestLog) ? store.giftRequestLog.slice(-limit).reverse() : []
+  });
+});
+
 app.get("/gift-diagnostics", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
     ok: true,
-    version: "v23-supabase-size-fix",
+    version: "v24-anti-replay-audit",
     cardsAvailable: remainingAvailableCount(store),
     cardsAvailableSendable: sendableAvailableCount(store),
     cardsAvailableMissingImage: availableMissingImageCount(store),
@@ -1430,6 +1507,8 @@ app.post("/sync-state", checkApiKey, async (req, res) => {
           cards: previousStore.cards || [],
           sentLog: previousStore.sentLog || [],
           processedMessageIds: previousStore.processedMessageIds || [],
+          inboundLog: previousStore.inboundLog || [],
+          giftRequestLog: previousStore.giftRequestLog || [],
           lastInbound: previousStore.lastInbound || null,
           lastGiftRequest: previousStore.lastGiftRequest || null,
           lastAdminNotification: previousStore.lastAdminNotification || null,
@@ -2105,11 +2184,12 @@ app.post("/webhook", async (req, res) => {
           const text = originalText.toLowerCase();
           const from = normalizePhone(msg.from);
           const messageId = msg.id || "";
+          const inboundMeta = buildInboundMeta(msg.timestamp);
 
-          recordInboundMessage(from, originalText, msg.type, messageId);
+          recordInboundMessage(from, originalText, msg.type, messageId, inboundMeta);
 
           if (isGiftCommand(text)) {
-            const result = await handleGiftRequest(from, messageId);
+            const result = await handleGiftRequest(from, messageId, inboundMeta);
             console.log("Gift request result:", result);
           } else {
             console.log("Inbound text ignored:", { from, text: originalText });
@@ -2123,5 +2203,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v23 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v24 Supabase database running on port ${PORT}`);
 });

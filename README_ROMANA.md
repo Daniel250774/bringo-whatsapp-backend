@@ -153,3 +153,10 @@ Backend v23 - Supabase size fix:
 - dacă activezi backup-urile, ele sunt salvate fără imageDataUrl, ca să nu dubleze pozele cardurilor la fiecare tranzacție;
 - adaugă GET /storage-diagnostics pentru estimare dimensiune store/imagine;
 - recomandat după ce Supabase arată EXCEEDING USAGE LIMITS la Database Size.
+
+Backend v24 - anti-replay + audit:
+- salvează jurnal cu ultimele mesaje inbound și ultimele cereri Gift: /gift-audit;
+- folosește timestamp-ul mesajului WhatsApp și ignoră mesajele vechi/întârziate;
+- variabilă Render opțională: MAX_INBOUND_MESSAGE_AGE_SECONDS=900;
+- dacă Meta retrimite un mesaj vechi/întârziat, rezultatul va fi ignored_old_message și nu se trimite card;
+- păstrează fixul pentru Supabase size din v23.
