@@ -160,3 +160,16 @@ Backend v24 - anti-replay + audit:
 - variabilă Render opțională: MAX_INBOUND_MESSAGE_AGE_SECONDS=900;
 - dacă Meta retrimite un mesaj vechi/întârziat, rezultatul va fi ignored_old_message și nu se trimite card;
 - păstrează fixul pentru Supabase size din v23.
+
+Backend v26 - notificare administrator doar mesaj:
+- livratorul primește în continuare cardul ca imagine;
+- administratorul NU mai primește poza cardului;
+- administratorul primește doar template-ul text aprobat: admin_gift_notificare;
+- dacă template-ul eșuează, încearcă fallback text simplu;
+- păstrează anti-replay, auditul /gift-audit și fixul Supabase size din versiunile anterioare.
+
+Variabile Render necesare:
+ADMIN_TEMPLATE_NAME=admin_gift_notificare
+ADMIN_TEMPLATE_LANGUAGE=ro
+
+ADMIN_TEMPLATE_ALWAYS nu mai trebuie setat în v26; backend-ul forțează automat template-only pentru administrator.

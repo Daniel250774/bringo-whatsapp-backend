@@ -16,7 +16,9 @@ const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const ADMIN_TEMPLATE_NAME = process.env.ADMIN_TEMPLATE_NAME || "";
 const ADMIN_TEMPLATE_LANGUAGE = process.env.ADMIN_TEMPLATE_LANGUAGE || "ro";
-const ADMIN_TEMPLATE_ALWAYS = String(process.env.ADMIN_TEMPLATE_ALWAYS || "").toLowerCase() === "true";
+// v26: notificarea către administrator este doar mesaj template/text, fără poza cardului.
+const ADMIN_TEMPLATE_ALWAYS = true;
+const ADMIN_NOTIFICATION_MODE = "template_only";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
@@ -870,59 +872,37 @@ async function sendAdminNotification(store, employee, card, mediaId, caption, re
     remainingAfter
   };
 
-  if (ADMIN_TEMPLATE_ALWAYS && ADMIN_TEMPLATE_NAME) {
+  if (ADMIN_TEMPLATE_NAME) {
     try {
       const result = await sendAdminTemplateMessage(event.to, event);
       event.status = "sent_template";
       event.templateMessageId = result?.messages?.[0]?.id || "";
-      event.note = "Notificarea către administrator a fost trimisă prin template WhatsApp.";
+      event.note = "Notificarea către administrator a fost trimisă doar ca mesaj template. Poza cardului nu se trimite către administrator în v26.";
       return appendAdminNotification(store, event);
     } catch (templateErr) {
       event.templateError = whatsappApiError(templateErr);
       console.error("admin template notification failed:", event.templateError);
     }
+  } else {
+    event.templateError = "ADMIN_TEMPLATE_NAME nu este configurat în Render.";
   }
 
-  try {
-    const result = await sendImageMessage(event.to, mediaId, caption);
-    event.status = "sent_image";
-    event.imageMessageId = result?.messages?.[0]?.id || "";
-    return appendAdminNotification(store, event);
-  } catch (imageErr) {
-    event.imageError = whatsappApiError(imageErr);
-    console.error("admin image notification failed:", event.imageError);
-  }
-
+  // Fallback text simplu, doar dacă template-ul nu merge. Nu trimite niciodată poza către administrator.
   try {
     const result = await sendTextMessage(event.to, caption);
     event.status = "sent_text_fallback";
     event.textMessageId = result?.messages?.[0]?.id || "";
-    event.note = "Imaginea către administrator a eșuat, dar textul a fost trimis.";
+    event.note = "Template-ul către administrator nu a mers, dar textul simplu a fost trimis. Poza nu a fost trimisă către administrator.";
     return appendAdminNotification(store, event);
   } catch (textErr) {
     event.textError = whatsappApiError(textErr);
-    console.error("admin text notification failed:", event.textError);
+    event.status = "failed";
+    event.note = "Notificarea către administrator nu a putut fi livrată ca template sau text. Poza nu a fost trimisă către administrator.";
+    console.error("admin text fallback failed:", event.textError);
+    return appendAdminNotification(store, event);
   }
-
-  if (ADMIN_TEMPLATE_NAME) {
-    try {
-      const result = await sendAdminTemplateMessage(event.to, event);
-      event.status = "sent_template_fallback";
-      event.templateMessageId = result?.messages?.[0]?.id || "";
-      event.note = "Mesajul normal către administrator a eșuat, dar template-ul WhatsApp a fost trimis.";
-      return appendAdminNotification(store, event);
-    } catch (templateErr) {
-      event.templateError = whatsappApiError(templateErr);
-      console.error("admin template fallback failed:", event.templateError);
-    }
-  }
-
-  event.status = "failed";
-  event.note = ADMIN_TEMPLATE_NAME
-    ? "Notificarea către administrator nu a putut fi livrată nici ca mesaj normal, nici ca template."
-    : "Notificarea WhatsApp către administrator nu a putut fi livrată. Configurează ADMIN_TEMPLATE_NAME cu un template aprobat pentru livrare în afara ferestrei de 24h.";
-  return appendAdminNotification(store, event);
 }
+
 
 function isGiftCommand(text) {
   const value = String(text || "").trim().toLowerCase();
@@ -1139,7 +1119,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v24-anti-replay-audit",
+    version: "v26-admin-template-only",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1158,6 +1138,7 @@ app.get("/", (req, res) => {
     backups: listBackupFiles().length,
     adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
     adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
+    adminNotificationMode: ADMIN_NOTIFICATION_MODE,
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     inboundLog: Array.isArray(store.inboundLog) ? store.inboundLog.length : 0,
     giftRequestLog: Array.isArray(store.giftRequestLog) ? store.giftRequestLog.length : 0,
@@ -1196,6 +1177,7 @@ app.get("/health", (req, res) => {
     employees: store.employees.length,
     adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
     adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
+    adminNotificationMode: ADMIN_NOTIFICATION_MODE,
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
@@ -1404,7 +1386,7 @@ app.get("/storage-diagnostics", checkApiKey, (req, res) => {
   const imageBytes = estimateImageDataBytes(store);
   res.json({
     ok: true,
-    version: "v24-anti-replay-audit",
+    version: "v26-admin-template-only",
     storage: USE_SUPABASE ? "supabase" : "local",
     supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     cardsTotal: (store.cards || []).length,
@@ -1420,7 +1402,7 @@ app.get("/gift-audit", checkApiKey, (req, res) => {
   const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
   res.json({
     ok: true,
-    version: "v24-anti-replay-audit",
+    version: "v26-admin-template-only",
     maxInboundMessageAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null,
@@ -1435,7 +1417,7 @@ app.get("/gift-diagnostics", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
     ok: true,
-    version: "v24-anti-replay-audit",
+    version: "v26-admin-template-only",
     cardsAvailable: remainingAvailableCount(store),
     cardsAvailableSendable: sendableAvailableCount(store),
     cardsAvailableMissingImage: availableMissingImageCount(store),
@@ -2203,5 +2185,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v24 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v26 Supabase database running on port ${PORT}`);
 });
