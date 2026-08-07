@@ -16,10 +16,10 @@ const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const ADMIN_TEMPLATE_NAME = process.env.ADMIN_TEMPLATE_NAME || "";
 const ADMIN_TEMPLATE_LANGUAGE = process.env.ADMIN_TEMPLATE_LANGUAGE || "ro";
-// v29: păstrează ordinea cardurilor și trimite ora României în parametrul 2 al template-ului administratorului.
+// v30: păstrează ordinea cardurilor, ora României și acceptă comenzile Gift/Ghift fără diferență de majuscule.
 const ADMIN_TEMPLATE_ALWAYS = true;
 const ADMIN_NOTIFICATION_MODE = "template_only";
-const APP_VERSION = "v29-card-order-admin-time";
+const APP_VERSION = "v30-card-order-admin-time-gift-aliases";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
@@ -972,7 +972,8 @@ async function sendAdminNotification(store, employee, card, mediaId, caption, re
 
 
 function isGiftCommand(text) {
-  return String(text || "").trim() === "Gift";
+  const normalized = String(text || "").trim().toLowerCase();
+  return normalized === "gift" || normalized === "ghift";
 }
 
 function buildInboundMeta(messageTimestamp) {

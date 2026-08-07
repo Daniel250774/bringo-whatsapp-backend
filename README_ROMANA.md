@@ -1,10 +1,10 @@
-# Bringo WhatsApp Backend v29
+# Bringo WhatsApp Backend v30
 
 Versiune construită peste backend-ul acceptat v26. Backend-ul v27 respins nu este inclus.
 
 ## Ce face
 
-- numai mesajul exact `Gift` declanșează trimiterea automată; sunt ignorate `gift`, `GIFT`, `Ghift`, `Ghif` și orice altă variantă;
+- mesajele `Gift` și `Ghift` declanșează trimiterea automată indiferent de majuscule/minuscule; formele incomplete `Gif` și `Ghif` sunt ignorate;
 - livrează automat primul card disponibil din ordinea salvată;
 - păstrează `distributionOrder` în baza online pentru aceeași ordine pe telefon și laptop;
 - oferă `POST /reorder-cards` pentru schimbarea ordinii fără regenerarea imaginilor;
@@ -89,4 +89,4 @@ Callback Meta:
 https://bringo-whatsapp-backend.onrender.com/webhook
 ```
 
-Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v29-card-order-admin-time`.
+Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v30-card-order-admin-time-gift-aliases`.
