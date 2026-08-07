@@ -1,4 +1,4 @@
-# Bringo WhatsApp Backend v28
+# Bringo WhatsApp Backend v29
 
 Versiune construită peste backend-ul acceptat v26. Backend-ul v27 respins nu este inclus.
 
@@ -18,7 +18,7 @@ Versiune construită peste backend-ul acceptat v26. Backend-ul v27 respins nu es
 Parametrii template-ului sunt trimiși în această ordine:
 
 1. `{{1}}` — numele livratorului
-2. `{{2}}` — telefonul livratorului
+2. `{{2}}` — ora trimiterii pentru modelul `admin_gift_livrator`; telefonul rămâne pentru modelul vechi `admin_gift_notificare`
 3. `{{3}}` — identificarea cardului
 4. `{{4}}` — valoarea cardului
 5. `{{5}}` — numărul de gifturi rămase
@@ -28,7 +28,7 @@ Body recomandat pentru template-ul Meta:
 ```text
 {{1}} a primit un card în valoare de {{4}}.
 
-Telefon: {{2}}
+Ora: {{2}}
 Card: {{3}}
 Gifturi rămase: {{5}}
 ```
@@ -89,4 +89,4 @@ Callback Meta:
 https://bringo-whatsapp-backend.onrender.com/webhook
 ```
 
-Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v28-card-order-template-only`.
+Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v29-card-order-admin-time`.

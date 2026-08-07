@@ -16,10 +16,10 @@ const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const ADMIN_TEMPLATE_NAME = process.env.ADMIN_TEMPLATE_NAME || "";
 const ADMIN_TEMPLATE_LANGUAGE = process.env.ADMIN_TEMPLATE_LANGUAGE || "ro";
-// v28: păstrează modul v26 template/text pentru administrator și adaugă ordinea cardurilor.
+// v29: păstrează ordinea cardurilor și trimite ora României în parametrul 2 al template-ului administratorului.
 const ADMIN_TEMPLATE_ALWAYS = true;
 const ADMIN_NOTIFICATION_MODE = "template_only";
-const APP_VERSION = "v28-card-order-template-only";
+const APP_VERSION = "v29-card-order-admin-time";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
@@ -546,6 +546,9 @@ async function sendAdminTemplateMessage(to, event) {
   }
 
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const secondParameter = ADMIN_TEMPLATE_NAME === "admin_gift_livrator"
+    ? event.sentTime
+    : event.employeePhone;
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -558,7 +561,7 @@ async function sendAdminTemplateMessage(to, event) {
           type: "body",
           parameters: [
             { type: "text", text: String(event.employee || "-") },
-            { type: "text", text: String(event.employeePhone || "-") },
+            { type: "text", text: String(secondParameter || "-") },
             { type: "text", text: String(event.last4 || event.card || "-") },
             { type: "text", text: String(event.value || "-") },
             { type: "text", text: String(event.remainingAfter ?? "-") }
@@ -863,6 +866,16 @@ function buildAdminCaption(employee, card, remainingAfter) {
   );
 }
 
+function formatRomaniaTime(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleTimeString("ro-RO", {
+    timeZone: "Europe/Bucharest",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
 function whatsappApiError(err) {
   const data = err.response?.data;
   if (data?.error) {
@@ -885,6 +898,7 @@ function appendAdminNotification(store, event) {
     to: normalizePhone(event.to || ADMIN_COPY_PHONE),
     employee: event.employee || "",
     employeePhone: event.employeePhone || "",
+    sentTime: event.sentTime || "",
     card: event.card || "",
     last4: event.last4 || "",
     value: event.value || "",
@@ -910,11 +924,13 @@ function appendAdminNotification(store, event) {
 }
 
 async function sendAdminNotification(store, employee, card, mediaId, caption, remainingAfter, options = {}) {
+  const sentAt = new Date();
   const event = {
-    at: new Date().toISOString(),
+    at: sentAt.toISOString(),
     to: normalizePhone(ADMIN_COPY_PHONE),
     employee: employee.name,
     employeePhone: employee.displayPhone || displayPhone(employee.phone),
+    sentTime: formatRomaniaTime(sentAt),
     card: card.fileBase || "",
     last4: card.last4 || "",
     value: formatGiftValueForText(card.value),
