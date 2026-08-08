@@ -1,10 +1,11 @@
-# Bringo WhatsApp Backend v30
+# Bringo WhatsApp Backend v31
 
 Versiune construită peste backend-ul acceptat v26. Backend-ul v27 respins nu este inclus.
 
 ## Ce face
 
 - mesajele `Gift` și `Ghift` declanșează trimiterea automată indiferent de majuscule/minuscule; formele incomplete `Gif` și `Ghif` sunt ignorate;
+- procesează cererile de gift într-o coadă serială, astfel încât webhook-urile duplicate sau cererile simultane să nu trimită aceeași imagine de mai multe ori;
 - livrează automat primul card disponibil din ordinea salvată;
 - păstrează `distributionOrder` în baza online pentru aceeași ordine pe telefon și laptop;
 - oferă `POST /reorder-cards` pentru schimbarea ordinii fără regenerarea imaginilor;
@@ -26,11 +27,13 @@ Parametrii template-ului sunt trimiși în această ordine:
 Body recomandat pentru template-ul Meta:
 
 ```text
-{{1}} a primit un card în valoare de {{4}}.
+Livratorul {{1}} a primit un card în valoare de {{4}}.
 
 Ora: {{2}}
 Card: {{3}}
-Gifturi rămase: {{5}}
+Gifturi rămase: {{5}}.
+
+Mesaj automat Bringo.
 ```
 
 Fallback-ul text din backend începe tot cu numele livratorului și valoarea cardului.
@@ -89,4 +92,4 @@ Callback Meta:
 https://bringo-whatsapp-backend.onrender.com/webhook
 ```
 
-Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v30-card-order-admin-time-gift-aliases`.
+Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v31-serial-gift-dedupe`.

@@ -16,10 +16,10 @@ const TEMPLATE_NAME = process.env.TEMPLATE_NAME || "";
 const TEMPLATE_LANGUAGE = process.env.TEMPLATE_LANGUAGE || "ro";
 const ADMIN_TEMPLATE_NAME = process.env.ADMIN_TEMPLATE_NAME || "";
 const ADMIN_TEMPLATE_LANGUAGE = process.env.ADMIN_TEMPLATE_LANGUAGE || "ro";
-// v30: păstrează ordinea cardurilor, ora României și acceptă comenzile Gift/Ghift fără diferență de majuscule.
+// v31: serializează cererile Gift pentru a opri webhook-urile duplicate/concurente înainte de trimitere.
 const ADMIN_TEMPLATE_ALWAYS = true;
 const ADMIN_NOTIFICATION_MODE = "template_only";
-const APP_VERSION = "v30-card-order-admin-time-gift-aliases";
+const APP_VERSION = "v31-serial-gift-dedupe";
 const BACKEND_API_KEY = process.env.BACKEND_API_KEY || "";
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "bringo_verify_2026";
 const ADMIN_COPY_PHONE = process.env.ADMIN_COPY_PHONE || "0766299556";
@@ -1027,6 +1027,20 @@ function recordInboundMessage(from, text, type, messageId, inboundMeta = {}) {
   return item;
 }
 
+let giftRequestQueue = Promise.resolve();
+let giftRequestQueuePending = 0;
+
+function runGiftRequestSerially(task) {
+  giftRequestQueuePending += 1;
+
+  const queued = giftRequestQueue.then(() => task());
+  giftRequestQueue = queued.catch(() => undefined);
+
+  return queued.finally(() => {
+    giftRequestQueuePending = Math.max(0, giftRequestQueuePending - 1);
+  });
+}
+
 
 async function handleGiftRequest(from, messageId, inboundMeta = {}) {
   const store = loadStore();
@@ -1210,6 +1224,8 @@ app.get("/", (req, res) => {
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     inboundLog: Array.isArray(store.inboundLog) ? store.inboundLog.length : 0,
     giftRequestLog: Array.isArray(store.giftRequestLog) ? store.giftRequestLog.length : 0,
+    giftProcessingMode: "serial_queue",
+    giftQueuePending: giftRequestQueuePending,
     maxInboundMessageAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
@@ -1248,6 +1264,8 @@ app.get("/health", (req, res) => {
     adminTemplateConfigured: Boolean(ADMIN_TEMPLATE_NAME),
     adminTemplateAlways: Boolean(ADMIN_TEMPLATE_ALWAYS),
     adminNotificationMode: ADMIN_NOTIFICATION_MODE,
+    giftProcessingMode: "serial_queue",
+    giftQueuePending: giftRequestQueuePending,
     adminNotifications: Array.isArray(store.adminNotifications) ? store.adminNotifications.length : 0,
     lastAdminNotification: store.lastAdminNotification || null,
     lastInbound: store.lastInbound || null,
@@ -2367,12 +2385,14 @@ app.post("/webhook", async (req, res) => {
           const messageId = msg.id || "";
           const inboundMeta = buildInboundMeta(msg.timestamp);
 
-          recordInboundMessage(from, originalText, msg.type, messageId, inboundMeta);
-
           if (isGiftCommand(originalText)) {
-            const result = await handleGiftRequest(from, messageId, inboundMeta);
+            const result = await runGiftRequestSerially(() => {
+              recordInboundMessage(from, originalText, msg.type, messageId, inboundMeta);
+              return handleGiftRequest(from, messageId, inboundMeta);
+            });
             console.log("Gift request result:", result);
           } else {
+            recordInboundMessage(from, originalText, msg.type, messageId, inboundMeta);
             console.log("Inbound text ignored:", { from, text: originalText });
           }
         }
@@ -2392,6 +2412,7 @@ if (require.main === module) {
 module.exports = {
   app,
   isGiftCommand,
+  runGiftRequestSerially,
   normalizeCardDistributionOrder,
   getOrderedAvailableCards,
   buildAdminCaption,
