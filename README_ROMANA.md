@@ -1,95 +1,184 @@
-# Bringo WhatsApp Backend v31
+# Bringo WhatsApp Backend v4 - Webhook Gift
 
-Versiune construită peste backend-ul acceptat v26. Backend-ul v27 respins nu este inclus.
+Această versiune adaugă:
+- GET /webhook pentru verificarea Meta
+- POST /webhook pentru mesaje primite
+- comanda text `Gift` — acceptă și `gift` / `GIFT`
+- stoc temporar/persistent local pe Render pentru carduri și angajați
+- notificare către administrator cu nume livrator, dată/oră, card și gifturi rămase
+- GET /state pentru sincronizarea aplicației online
+- POST /sync-state pentru încărcarea cardurilor disponibile în backend
 
-## Ce face
-
-- mesajele `Gift` și `Ghift` declanșează trimiterea automată indiferent de majuscule/minuscule; formele incomplete `Gif` și `Ghif` sunt ignorate;
-- procesează cererile de gift într-o coadă serială, astfel încât webhook-urile duplicate sau cererile simultane să nu trimită aceeași imagine de mai multe ori;
-- livrează automat primul card disponibil din ordinea salvată;
-- păstrează `distributionOrder` în baza online pentru aceeași ordine pe telefon și laptop;
-- oferă `POST /reorder-cards` pentru schimbarea ordinii fără regenerarea imaginilor;
-- oferă `POST /notify-admin` pentru notificarea trimiterilor manuale;
-- livratorul primește imaginea cardului;
-- administratorul primește numai template/text, niciodată imaginea cardului;
-- păstrează Supabase, backup-urile, cooldown-ul, auditul și protecția anti-replay din v26.
-
-## Mesajul administratorului
-
-Parametrii template-ului sunt trimiși în această ordine:
-
-1. `{{1}}` — numele livratorului
-2. `{{2}}` — ora trimiterii pentru modelul `admin_gift_livrator`; telefonul rămâne pentru modelul vechi `admin_gift_notificare`
-3. `{{3}}` — identificarea cardului
-4. `{{4}}` — valoarea cardului
-5. `{{5}}` — numărul de gifturi rămase
-
-Body recomandat pentru template-ul Meta:
-
-```text
-Livratorul {{1}} a primit un card în valoare de {{4}}.
-
-Ora: {{2}}
-Card: {{3}}
-Gifturi rămase: {{5}}.
-
-Mesaj automat Bringo.
-```
-
-Fallback-ul text din backend începe tot cu numele livratorului și valoarea cardului.
-
-## Variabile Render
-
-Necesare pentru WhatsApp:
-
-```text
+Variabile Render necesare:
 WHATSAPP_TOKEN
 PHONE_NUMBER_ID
 GRAPH_API_VERSION=v23.0
 WEBHOOK_VERIFY_TOKEN=bringo_verify_2026
 ADMIN_COPY_PHONE=0766299556
-ADMIN_TEMPLATE_NAME=admin_gift_notificare
-ADMIN_TEMPLATE_LANGUAGE=ro
-```
 
-Necesare când se folosește baza online existentă:
-
-```text
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-SUPABASE_STORE_ID=bringo-main
-```
-
-Opționale:
-
-```text
+Opțional:
 BACKEND_API_KEY
 TEMPLATE_NAME
 TEMPLATE_LANGUAGE=ro
-MAX_INBOUND_MESSAGE_AGE_SECONDS=900
-SUPABASE_BACKUPS_ENABLED=false
-```
 
-Nu sunt necesare modificări în schema Supabase față de instalarea existentă.
-
-## Endpoint-uri principale
-
-- `GET /health`
-- `GET /state`
-- `POST /sync-state`
-- `POST /upsert-cards`
-- `POST /reorder-cards`
-- `POST /mark-card-sent`
-- `POST /notify-admin`
-- `GET /gift-audit`
-- `GET /gift-diagnostics`
-- `GET /admin-notifications`
-- `GET /webhook` și `POST /webhook`
-
-Callback Meta:
-
-```text
+Callback URL pentru Meta:
 https://bringo-whatsapp-backend.onrender.com/webhook
-```
 
-Pornește aplicația cu `npm start`. Versiunea raportată de `/health` și `/state` este `v31-serial-gift-dedupe`.
+Verify token pentru Meta:
+bringo_verify_2026
+
+După deploy, în Meta trebuie abonat webhook-ul la câmpul/messages field `messages`.
+
+Debug:
+- /health arată lastInbound și lastGiftRequest, ca să verifici dacă webhook-ul primește mesajele.
+
+
+Backend v5 state fix: /reset-state, /mark-card-sent, replaceMode=true la /sync-state, cardsSent în /health.
+
+Backend v6 - Subscribe WABA:
+- adaugă GET/POST /subscribe-waba
+- folosește WABA_ID=2003039456993786 implicit sau variabila Render WABA_ID
+- endpoint-ul face POST către Graph API /<WABA_ID>/subscribed_apps pentru a lega WABA la aplicația curentă.
+După deploy deschide:
+https://bringo-whatsapp-backend.onrender.com/subscribe-waba
+
+Backend v7 - Command aliases:
+- comanda automată acceptă acum atât `Gift`, cât și `Ghift`
+- acceptă indiferent de litere mari/mici: gift, Gift, GIFT, ghift, Ghift, GHIFT
+
+Backend v8 - eligibilitate și text către livrator:
+- comanda Gift/Ghift trimite către livrator imaginea cu caption: "Ai primit un gift card în valoare de 2.000 lei."
+- dacă livratorul este blocat/neeligibil, primește mesajul:
+  "Momentan nu ești eligibil pentru primirea unui gift. Te rugăm să contactezi administratorul."
+
+Backend v9 - valoare din fiecare gift:
+- caption-ul către livrator este dinamic: "Ai primit un gift card în valoare de X lei."
+- X vine din valoarea cardului sincronizată din aplicație.
+- notificarea către administrator include și valoarea cardului.
+
+Backend v10 - modificare valoare card:
+- adaugă POST /update-card-value
+- permite modificarea valorii pentru carduri disponibile și carduri deja trimise
+- actualizează și istoricul sentLog, când cardul există acolo
+
+Backend v11 - pauză automată livratori:
+- fiecare livrator poate avea cooldownMinutes configurabil;
+- după primirea unui Gift/Ghift, livratorul primește automat pauză temporară;
+- dacă cere din nou prea repede, primește mesaj cu ora la care poate solicita următorul gift;
+- mark-card-sent aplică pauza și pentru trimiterile manuale din aplicație;
+- /state returnează employeeList cu blockedUntil, lastGiftAt și cooldownMinutes.
+
+Backend v12 - sincronizare carduri fără ștergerea livratorilor:
+- adaugă POST /upsert-cards pentru încărcarea PDF-urilor de pe telefon/laptop fără să șteargă ce există deja;
+- adaugă POST /clear-cards pentru golirea doar a cardurilor, cu păstrarea livratorilor;
+- /reset-state păstrează livratorii ca măsură de siguranță.
+
+Backend v13 - backend autoritar pentru carduri:
+- /upsert-cards este endpoint-ul principal pentru cardurile încărcate din PDF;
+- /clear-cards șterge doar cardurile, păstrând livratorii;
+- /sync-state nu mai golește accidental cardurile/livratorii când primește liste goale, decât dacă se trimite explicit allowEmptyCards/allowEmptyEmployees;
+- /state returnează cardsUpdatedAt și employeesUpdatedAt pentru sincronizare între dispozitive.
+
+Backend v14 - sincronizare directă livratori:
+- adaugă POST /upsert-employees pentru adăugare/modificare/blocare/pauză livratori fără rescrierea cardurilor;
+- adaugă POST /delete-employee pentru ștergere livrator fără rescrierea cardurilor;
+- rezolvă blocarea/întârzierea când există multe carduri, pentru că livratorii nu mai trimit toate imaginile cardurilor la fiecare modificare.
+
+Backend v15 - backup și protecție:
+- creează backup automat înainte de fiecare salvare a bazei;
+- GET /backups listează backup-urile disponibile;
+- POST /restore-backup restaurează un backup;
+- GET /export-store descarcă baza curentă;
+- păstrează datele necunoscute la încărcarea store-ului, inclusiv timestamps.
+
+
+Backend v16 - Supabase Database Edition:
+- Folosește o bază de date online Supabase ca sursă principală.
+- Datele nu mai depind de fișierul local Render.
+- Variabile Render necesare:
+  SUPABASE_URL
+  SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_STORE_ID=bringo-main
+- Endpoint-uri utile:
+  /db-status
+  /backups
+  /restore-backup?id=<id>
+  /export-store
+  /reload-db
+- Fișierul local rămâne doar cache/backup local, nu sursa principală.
+
+Backend v17 - Supabase Axios Diagnostics:
+- nu mai folosește supabase-js pentru conexiunea la Supabase;
+- folosește axios direct către REST API, cu timeout și mesaje de eroare mai clare;
+- adaugă /supabase-test pentru verificare rapidă a conexiunii Supabase;
+- util când apare eroarea Node/undici: TypeError: fetch failed.
+
+Backend v18 - jurnal notificări administrator:
+- salvează în Supabase statusul fiecărei notificări trimise către administrator;
+- dacă trimiterea imaginii către administrator eșuează, încearcă fallback text;
+- dacă eșuează și textul, eroarea WhatsApp este salvată în lastAdminNotification și /admin-notifications;
+- adaugă GET /admin-notifications pentru verificare rapidă.
+
+Backend v19 - fix valoare cu zecimale:
+- repară afișarea valorilor de tip 1.415,27 lei în mesajele WhatsApp;
+- include în continuare jurnalul notificărilor către administrator din v18.
+
+Backend v20:
+- adaugă endpoint POST /delete-card pentru ștergerea directă a cardurilor disponibile sau deja folosite;
+- adaugă fallback opțional cu template WhatsApp pentru notificarea administratorului;
+- variabile opționale Render:
+  ADMIN_TEMPLATE_NAME=numele_template_ului_aprobat
+  ADMIN_TEMPLATE_LANGUAGE=ro
+  ADMIN_TEMPLATE_ALWAYS=true  (opțional, dacă vrei ca notificarea către administrator să fie mereu template)
+Template recomandat, categoria Utility, body:
+Gift trimis către {{1}}
+Telefon livrator: {{2}}
+Card: {{3}}
+Valoare: {{4}}
+Gifturi rămase: {{5}}
+
+Backend v21:
+- adaugă diagnostice: cardsAvailableSendable și cardsAvailableMissingImage;
+- salvează lastGiftRequest și când trimiterea eșuează, nu mai rămâne doar lastInbound;
+- detectează cazul în care există card disponibil dar fără imagine salvată;
+- recomandat împreună cu frontend v49.
+
+Backend v22:
+- repară o problemă prin care sincronizarea din aplicația web putea șterge lastInbound, lastGiftRequest și adminNotifications;
+- păstrează jurnalele webhook/admin la sync-state;
+- adaugă GET /gift-diagnostics pentru verificare rapidă după un mesaj Gift.
+
+Backend v23 - Supabase size fix:
+- oprește implicit backup-urile mari în Supabase: SUPABASE_BACKUPS_ENABLED=false;
+- dacă activezi backup-urile, ele sunt salvate fără imageDataUrl, ca să nu dubleze pozele cardurilor la fiecare tranzacție;
+- adaugă GET /storage-diagnostics pentru estimare dimensiune store/imagine;
+- recomandat după ce Supabase arată EXCEEDING USAGE LIMITS la Database Size.
+
+Backend v24 - anti-replay + audit:
+- salvează jurnal cu ultimele mesaje inbound și ultimele cereri Gift: /gift-audit;
+- folosește timestamp-ul mesajului WhatsApp și ignoră mesajele vechi/întârziate;
+- variabilă Render opțională: MAX_INBOUND_MESSAGE_AGE_SECONDS=900;
+- dacă Meta retrimite un mesaj vechi/întârziat, rezultatul va fi ignored_old_message și nu se trimite card;
+- păstrează fixul pentru Supabase size din v23.
+
+Backend v26 - notificare administrator doar mesaj:
+- livratorul primește în continuare cardul ca imagine;
+- administratorul NU mai primește poza cardului;
+- administratorul primește doar template-ul text aprobat: admin_gift_notificare;
+- dacă template-ul eșuează, încearcă fallback text simplu;
+- păstrează anti-replay, auditul /gift-audit și fixul Supabase size din versiunile anterioare.
+
+Variabile Render necesare:
+ADMIN_TEMPLATE_NAME=admin_gift_notificare
+ADMIN_TEMPLATE_LANGUAGE=ro
+
+ADMIN_TEMPLATE_ALWAYS nu mai trebuie setat în v26; backend-ul forțează automat template-only pentru administrator.
+
+Backend v28 - protecție bază goală + backup:
+- făcut peste v26-admin-template-only, nu peste v27;
+- păstrează administrator doar mesaj template;
+- refuză salvarea unei baze complet goale peste o bază care avea date;
+- adaugă GET /export-full-backup;
+- adaugă POST /restore-full-backup;
+- variabilă opțională Render:
+  EMPTY_STORE_GUARD_ENABLED=true
