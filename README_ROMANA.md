@@ -182,3 +182,20 @@ Backend v28 - protecție bază goală + backup:
 - adaugă POST /restore-full-backup;
 - variabilă opțională Render:
   EMPTY_STORE_GUARD_ENABLED=true
+
+Backend v29 - ordine carduri disponibile:
+- făcut peste v28-empty-store-guard;
+- păstrează protecția anti-bază-goală;
+- păstrează export/import backup;
+- adaugă POST /reorder-cards pentru mutarea cardurilor disponibile sus/jos;
+- păstrează imaginile originale deja salvate în backend/Supabase.
+
+Backend v30 - ora corectă în mesajul către administrator:
+- făcut peste v29-card-order;
+- păstrează protecția anti-bază-goală;
+- păstrează export/import backup;
+- păstrează mutarea cardurilor disponibile cu /reorder-cards;
+- schimbă parametrul 2 din template-ul administratorului:
+  înainte: telefon livrator;
+  acum: ora trimiterii, ora României, format HH:MM.
+- telefonul livratorului rămâne salvat în logurile backend, dar nu mai este trimis ca parametrul 2 în template.

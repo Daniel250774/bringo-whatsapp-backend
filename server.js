@@ -551,7 +551,7 @@ async function sendAdminTemplateMessage(to, event) {
           type: "body",
           parameters: [
             { type: "text", text: String(event.employee || "-") },
-            { type: "text", text: String(event.employeePhone || "-") },
+            { type: "text", text: String(event.sentTime || "-") },
             { type: "text", text: String(event.last4 || event.card || "-") },
             { type: "text", text: String(event.value || "-") },
             { type: "text", text: String(event.remainingAfter ?? "-") }
@@ -834,14 +834,22 @@ function buildEmployeeGiftCaption(card) {
   return "Ai primit un gift card în valoare de " + formatGiftValueForText(card && card.value) + ".";
 }
 
+function bucharestDateTimeParts(isoValue) {
+  const d = isoValue ? new Date(isoValue) : new Date();
+  return {
+    dateText: d.toLocaleDateString("ro-RO", { timeZone: "Europe/Bucharest" }),
+    timeText: d.toLocaleTimeString("ro-RO", {
+      timeZone: "Europe/Bucharest",
+      hour: "2-digit",
+      minute: "2-digit"
+    })
+  };
+}
+
 function buildAdminCaption(employee, card, remainingAfter) {
-  const now = new Date();
-  const dateText = now.toLocaleDateString("ro-RO", { timeZone: "Europe/Bucharest" });
-  const timeText = now.toLocaleTimeString("ro-RO", {
-    timeZone: "Europe/Bucharest",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  const parts = bucharestDateTimeParts(card && card.sentAt);
+  const dateText = parts.dateText;
+  const timeText = parts.timeText;
   const cardLabel = card.last4 || (card.code ? String(card.code).slice(-4) : card.fileBase || "-");
 
   return (
@@ -878,6 +886,9 @@ function appendAdminNotification(store, event) {
     to: normalizePhone(event.to || ADMIN_COPY_PHONE),
     employee: event.employee || "",
     employeePhone: event.employeePhone || "",
+    sentAt: event.sentAt || event.at || "",
+    sentDate: event.sentDate || "",
+    sentTime: event.sentTime || "",
     card: event.card || "",
     last4: event.last4 || "",
     value: event.value || "",
@@ -901,8 +912,14 @@ function appendAdminNotification(store, event) {
 }
 
 async function sendAdminNotification(store, employee, card, mediaId, caption, remainingAfter) {
+  const sentAt = card && card.sentAt ? card.sentAt : new Date().toISOString();
+  const parts = bucharestDateTimeParts(sentAt);
+
   const event = {
-    at: new Date().toISOString(),
+    at: sentAt,
+    sentAt,
+    sentDate: parts.dateText,
+    sentTime: parts.timeText,
     to: normalizePhone(ADMIN_COPY_PHONE),
     employee: employee.name,
     employeePhone: employee.displayPhone || displayPhone(employee.phone),
@@ -917,7 +934,7 @@ async function sendAdminNotification(store, employee, card, mediaId, caption, re
       const result = await sendAdminTemplateMessage(event.to, event);
       event.status = "sent_template";
       event.templateMessageId = result?.messages?.[0]?.id || "";
-      event.note = "Notificarea către administrator a fost trimisă doar ca mesaj template. Poza cardului nu se trimite către administrator în v26.";
+      event.note = "Notificarea către administrator a fost trimisă doar ca mesaj template. Poza cardului nu se trimite către administrator. Parametrul 2 din template este ora trimiterii în v30.";
       return appendAdminNotification(store, event);
     } catch (templateErr) {
       event.templateError = whatsappApiError(templateErr);
@@ -1159,7 +1176,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "Bringo WhatsApp Backend",
-    version: "v28-empty-store-guard",
+    version: "v30-admin-message-time",
     configured: requireConfig().length === 0,
     mode: TEMPLATE_NAME ? "template_with_image" : "direct_image_message",
     cardsAvailable: remainingAvailableCount(store),
@@ -1428,7 +1445,7 @@ app.get("/storage-diagnostics", checkApiKey, (req, res) => {
   const imageBytes = estimateImageDataBytes(store);
   res.json({
     ok: true,
-    version: "v28-empty-store-guard",
+    version: "v30-admin-message-time",
     storage: USE_SUPABASE ? "supabase" : "local",
     supabaseBackupsEnabled: SUPABASE_BACKUPS_ENABLED,
     cardsTotal: (store.cards || []).length,
@@ -1444,7 +1461,7 @@ app.get("/gift-audit", checkApiKey, (req, res) => {
   const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
   res.json({
     ok: true,
-    version: "v28-empty-store-guard",
+    version: "v30-admin-message-time",
     maxInboundMessageAgeSeconds: MAX_INBOUND_MESSAGE_AGE_SECONDS,
     lastInbound: store.lastInbound || null,
     lastGiftRequest: store.lastGiftRequest || null,
@@ -1459,7 +1476,7 @@ app.get("/gift-diagnostics", checkApiKey, (req, res) => {
   const store = loadStore();
   res.json({
     ok: true,
-    version: "v28-empty-store-guard",
+    version: "v30-admin-message-time",
     cardsAvailable: remainingAvailableCount(store),
     cardsAvailableSendable: sendableAvailableCount(store),
     cardsAvailableMissingImage: availableMissingImageCount(store),
@@ -1496,7 +1513,7 @@ app.get("/export-full-backup", checkApiKey, (req, res) => {
     res.json({
       ok: true,
       service: "Bringo WhatsApp Backup",
-      version: "v28-empty-store-guard",
+      version: "v30-admin-message-time",
       exportedAt: new Date().toISOString(),
       counts,
       data: normalizeStore(store)
@@ -1543,6 +1560,79 @@ app.post("/restore-full-backup", checkApiKey, (req, res) => {
       ok: false,
       code: err.code || "",
       error: err.message || "Eroare restore-full-backup"
+    });
+  }
+});
+
+app.post("/reorder-cards", checkApiKey, (req, res) => {
+  try {
+    const store = loadStore();
+    const incoming = Array.isArray(req.body.orderedAvailable) ? req.body.orderedAvailable : [];
+
+    if (!incoming.length) {
+      return res.status(400).json({ ok: false, error: "Lista orderedAvailable este goală." });
+    }
+
+    const orderMap = new Map();
+    incoming.forEach((item, index) => {
+      const code = String(item.code || "").trim();
+      const id = String(item.id || "").trim();
+      if (code && !orderMap.has("code:" + code)) orderMap.set("code:" + code, index);
+      if (id && !orderMap.has("id:" + id)) orderMap.set("id:" + id, index);
+    });
+
+    const available = [];
+    const sent = [];
+
+    (store.cards || []).forEach((card, index) => {
+      const entry = { card, originalIndex: index };
+      if ((card.status || "available") === "sent") sent.push(entry);
+      else available.push(entry);
+    });
+
+    function orderIndex(entry) {
+      const codeKey = "code:" + String(entry.card.code || "").trim();
+      const idKey = "id:" + String(entry.card.id || "").trim();
+
+      if (orderMap.has(codeKey)) return orderMap.get(codeKey);
+      if (orderMap.has(idKey)) return orderMap.get(idKey);
+
+      // Cardurile disponibile care nu sunt în lista primită rămân după cele ordonate,
+      // în ordinea lor veche.
+      return incoming.length + entry.originalIndex;
+    }
+
+    available.sort((a, b) => {
+      const ai = orderIndex(a);
+      const bi = orderIndex(b);
+      if (ai !== bi) return ai - bi;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    store.cards = available.map(x => x.card).concat(sent.map(x => x.card));
+    store.cardsUpdatedAt = new Date().toISOString();
+
+    saveStore(store, "reorder_cards");
+
+    const availableCards = store.cards.filter(c => (c.status || "available") !== "sent");
+
+    res.json({
+      ok: true,
+      message: "Ordinea cardurilor disponibile a fost salvată.",
+      cardsAvailable: remainingAvailableCount(store),
+      cardsAvailableSendable: sendableAvailableCount(store),
+      cardsAvailableMissingImage: availableMissingImageCount(store),
+      cardsSent: sentCount(store),
+      cardsTotal: store.cards.length,
+      employees: store.employees.length,
+      nextCard: availableCards.length ? publicCards([availableCards[0]])[0] : null
+    });
+  } catch (err) {
+    console.error("reorder-cards error:", err);
+    res.status(err.code === "EMPTY_STORE_GUARD" ? 409 : 500).json({
+      ok: false,
+      code: err.code || "",
+      error: err.message || "Eroare reorder-cards"
     });
   }
 });
@@ -2285,5 +2375,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Bringo WhatsApp Backend v28 Supabase database running on port ${PORT}`);
+  console.log(`Bringo WhatsApp Backend v30 Supabase database running on port ${PORT}`);
 });
